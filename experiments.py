@@ -22,12 +22,12 @@ import os
 # import pandas.io.sql as psql
 print("1")
 
-from sklearn.svm import SVC, LinearSVC
+from sklearn.svm import SVC, LinearSVC, OneClassSVM
 from sklearn.neural_network import MLPClassifier
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, LassoCV, LogisticRegressionCV
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold
 import sklearn.metrics
 import sklearn.model_selection
@@ -1549,21 +1549,34 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         # Not a time series
 
         if modeltype == 'rf':
-            model=RandomForestClassifier()
+            model=RandomForestClassifier(random_state=random_state)
 
-            n_estimators = [int(x) for x in np.linspace(start = 50, stop = 2000, num = 20)]
-            max_features = ['auto', 'sqrt']
-            max_depth = [int(x) for x in np.linspace(10, 110, num = 11)]
-            max_depth.append(None)
-            min_samples_split = [2,3, 5, 7, 10]
-            min_samples_leaf = [1, 2, 4]
-            bootstrap = [True, False]
+            n_estimators = [50, 100, 500, 1000] #[int(x) for x in np.linspace(start = 50, stop = 2000, num = 20)]
+            max_features = ['auto', 'log2']
+            # max_depth = [int(x) for x in np.linspace(10, 110, num = 11)]
+            # max_depth.append(None)
+            # min_samples_split = [2,3, 5, 7, 10]
+            # min_samples_leaf = [1, 2, 4]
+            # bootstrap = [True, False]
             random_grid = {'n_estimators': n_estimators,
                        'max_features': max_features,
-                       'max_depth': max_depth,
-                       'min_samples_split': min_samples_split,
-                       'min_samples_leaf': min_samples_leaf,
-                       'bootstrap': bootstrap}
+                    #    'max_depth': max_depth,
+                    #    'min_samples_split': min_samples_split,
+                    #    'min_samples_leaf': min_samples_leaf,
+                    #    'bootstrap': bootstrap
+                    }
+        
+        elif modeltype == 'iforest':
+            model=IsolationForest(random_state=random_state)
+
+            n_estimators = [50, 100, 500, 1000] #[int(x) for x in np.linspace(start = 50, stop = 1000, num = 20)]
+            max_features = [0.3, 0.5, 0.7]
+            contamination=['auto']
+            behaviour=["new"]
+            random_grid = {'n_estimators': n_estimators,
+                       'max_features': max_features,
+                       'contamination': contamination,
+                       'behaviour': behaviour}
 
         elif modeltype=='lr':
             print('Logistic Regression model!!')
@@ -1612,6 +1625,21 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                            'gamma':gamma_range
                           }
 
+        elif modeltype == '1class_svm':
+            model = OneClassSVM()
+
+            kernel = ['rbf']
+            gamma_range = np.logspace(-5, 1, 7)
+            tol_values = np.logspace(-4, 0, num = 5)
+            nu_values = np.linspace(0.1, 0.5, 5)    
+
+            random_grid = {'kernel': kernel,
+                           'gamma': gamma_range,
+                           'tol':tol_values,
+                           'nu': nu_values
+                          }
+
+
         elif modeltype == 'mlp':
             model = MLPClassifier()
 
@@ -1642,18 +1670,25 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         else:
             raise Exception('modeltype = "%s" is invalid' % modeltype)
 
-        scoring='roc_auc'
+        
+        if modeltype in ['1class_svm', 'iforest']:
+            ## auroc doesn't work for one-class models
+            scoring=sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
+            y[y==1] = -1
+            y[y==0] = 1
+        else:
+            scoring='roc_auc'
         #temporary for no-years
-        try:
-            trained_model=model.set_params(**best_params).fit(X,y)
-        except:
-            random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
-                                               scoring=scoring, random_state=random_state, n_jobs = n_threads, 
-                                               error_score = 0.0, **randomSearchCVargs)
-            random_search.fit(X, y)
-            best_params=random_search.best_params_
-            trained_model=random_search.best_estimator_
-            print(random_search.best_params_)
+        # try:
+        #     trained_model=model.set_params(**best_params).fit(X,y)
+        # except:
+        random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
+                                            scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+                                            error_score = 0.0, **randomSearchCVargs)
+        random_search.fit(X, y)
+        best_params=random_search.best_params_
+        trained_model=random_search.best_estimator_
+        print(random_search.best_params_)
 
 
         return trained_model
@@ -1798,6 +1833,12 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
                     elif modeltype in ['svm', 'rbf-svm']:
                         y_pred_prob=model.decision_function(X_df)
                         pred=model.predict(X_df)
+                    elif modeltype in ['1class_svm', 'iforest']:
+                        ## one-class classifier
+                        y_pred_prob= -1.0 * model.decision_function(X_df)
+                        pred= model.predict(X_df)
+                        pred[pred==1] = 0
+                        pred[pred==-1] = 1
                     else:
                         raise Exception('dont know proba function for classifier = "%s"' % modeltype)
 
@@ -2268,7 +2309,7 @@ if __name__=="__main__":
     parser.add_argument('--representation', type=str, default='raw', choices=['raw', 'pca', 'umap', 'autoencoder', 'nlp'])
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
-    parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', 'lstm', 'gru', 'grud']")
+    parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', 'iforest', 'lstm', 'gru', 'grud']")
     parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years'], four training paradigms")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
