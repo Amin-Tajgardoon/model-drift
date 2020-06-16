@@ -325,6 +325,7 @@ def read_years_data(data_dir=""):
 #     years_df=pd.read_csv(pathname, index_col=0, header=None)
     years_df = y_df.reset_index()[['hadm_id', 'intime']].set_index('hadm_id')
     years_df['year'] = pd.to_datetime(years_df['intime']).dt.year
+    years_df['month'] = pd.to_datetime(years_df['intime']).dt.month
     years_df.drop(columns=['intime'], inplace=True)
     
 #     years_df.columns=["hadm_id".encode(), "year"]
@@ -1688,9 +1689,9 @@ def invert_dict(d):
 
 
 def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', representation='raw',
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir=""):
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2):
     """
-    This function trains data (1-test_size) from 2001-2002 mimic-iii and tests on data from 2001-2002 (the remaining test_size of data), and from 2003 onwards.
+    This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
     """
     global filtered_df
@@ -1731,7 +1732,7 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
     #split years into 20% test 80% train unless otherwise specified
     # train_years, test_years=sklearn.model_selection.train_test_split(year_index,  test_size=test_size, random_state=int(random_seed)+1, stratify=years_df.loc[year_index,:].values.tolist())
     train_years=year_index #so that variance is only introduced in random seed and that rolling vs. 2001-2002 style is directly comparable.
-    test_years=year_index
+    # test_years=year_index
     print("data preprocessing")
 
     for modeltype in model_types:
@@ -1757,68 +1758,72 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
 
         years_set=set(years_df['year'].values.tolist())
         ## exclude any year that is smaller than training_years
-        years_set=set([yr for yr in years_set if (yr >= np.array(training_years)).any()])
+        test_years=set([yr for yr in years_set if (yr > np.array(training_years)).any()])
 
         dump_filename=os.path.join(output_dir, prefix+"result_first-years-style_{}_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.txt".format(
             "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
         with open(dump_filename, 'w') as f:
-            for year in tqdm(sorted(years_set)):
-                
-                # open the trained model and test on years 2011 onwards
-                year_index=years_df[years_df['year'].isin([year])].index.tolist()
-        #         if year in [2001, 2002]:
-                if year in training_years:
-                    #eliminate the training data from testing
-                    year_index=list(set(year_index).intersection(set(test_years)))
+            for year in tqdm(sorted(test_years)):
+                for month in range(1, 13, test_month_interval):
+                    test_months=np.arange(month, month+test_month_interval, 1)
+                    # open the trained model and test on years 2011 onwards, every 2 months
+                    test_index=years_df[(years_df['year'].isin([year])) &
+                                        (years_df['month'].isin(test_months))].index.tolist()
+                    # if year in training_years:
+                    #     #eliminate the training data from testing
+                    #     year_index=list(set(year_index).intersection(set(test_years)))
 
-                # get the X and y data for testing
-                X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
-                    filtered_df_time_window.loc[idx[:,year_index,:],:], level, 'Simple', target,
-                    representation, is_time_series, impute=not(modeltype=='grud'),
-                    timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                    # get the X and y data for testing
+                    X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                        filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                        representation, is_time_series, impute=not(modeltype=='grud'),
+                        timeseries_vect=timeseries_vect, representation_vect=representation_vect)
 
-                # Different models have different score funcions
-                if modeltype in ['lstm','gru']:
-                    y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
-                    pred = list(map(int, y_pred_prob > 0.5))
-                elif modeltype=='grud':
-                    #create test_dataloader X_df, y_df
-                    test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+                    # Different models have different score funcions
+                    if modeltype in ['lstm','gru']:
+                        y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
+                        pred = list(map(int, y_pred_prob > 0.5))
+                    elif modeltype=='grud':
+                        #create test_dataloader X_df, y_df
+                        test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
 
-                    predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
-                    y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
-                    y=np.squeeze(np.asarray(labels))
-                    pred=np.argmax(np.squeeze(predictions), axis=1)
-                    # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-                elif modeltype in ['lr', 'rf', 'mlp', 'knn']:
-                    y_pred_prob=model.predict_proba(X_df)[:,1]
-                    pred=model.predict(X_df)
-                elif modeltype in ['svm', 'rbf-svm']:
-                    y_pred_prob=model.decision_function(X_df)
-                    pred=model.predict(X_df)
-                else:
-                    raise Exception('dont know proba function for classifier = "%s"' % modeltype)
+                        predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
+                        y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
+                        y=np.squeeze(np.asarray(labels))
+                        pred=np.argmax(np.squeeze(predictions), axis=1)
+                        # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
+                    elif modeltype in ['lr', 'rf', 'mlp', 'knn']:
+                        y_pred_prob=model.predict_proba(X_df)[:,1]
+                        pred=model.predict(X_df)
+                    elif modeltype in ['svm', 'rbf-svm']:
+                        y_pred_prob=model.decision_function(X_df)
+                        pred=model.predict(X_df)
+                    else:
+                        raise Exception('dont know proba function for classifier = "%s"' % modeltype)
 
-                AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-                F1=sklearn.metrics.f1_score(y, pred)
-                ACC=sklearn.metrics.accuracy_score(y, pred)
-                APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-                f.write("year, {}, AUC, {} \r\n".format(str(year), str(AUC)))
-                f.write("year, {}, F1, {} \r\n".format(str(year), str(F1)))
-                f.write("year, {}, Acc, {} \r\n".format(str(year), str(ACC)))
-                f.write("year, {}, APR, {} \r\n".format(str(year), str(APR)))
+                    try:
+                        AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
+                        F1=sklearn.metrics.f1_score(y, pred)
+                        ACC=sklearn.metrics.accuracy_score(y, pred)
+                        APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
+                    except:
+                        AUC=F1=ACC=APR=np.nan
+                    f.write("year, {}, months, <{}>, AUC, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(AUC)))
+                    f.write("year, {}, months, <{}>, F1, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(F1)))
+                    f.write("year, {}, months, <{}>, Acc, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(ACC)))
+                    f.write("year, {}, months, <{}>, APR, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(APR)))
 
-                f.write("year, {}, label, <{}> \r\n".format(str(year), ",".join([str(i) for i in y])))
-                f.write("year, {}, pred, <{}> \r\n".format(str(year), ",".join([str(i) for i in pred])))
-                f.write("year, {}, y_pred_prob, <{}>\r\n".format(str(year), ",".join([str(i) for i in y_pred_prob])))
-                try:
-                    f.write("year, {}, gender, <{}> \r\n".format(str(year), ",".join([str(i) for i in gender])))
-                    f.write("year, {}, ethnicity, <{}> \r\n".format(str(year), ",".join([str(i) for i in ethnicity])))
-                    f.write("year, {}, subject, <{}> \r\n".format(str(year), ",".join([str(i) for i in subject_id])))
-                except:
-                    pass
+                    f.write("year, {}, months, <{}>, label, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y])))
+                    f.write("year, {}, months, <{}>, pred, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in pred])))
+                    f.write("year, {}, months, <{}>, y_pred_prob, <{}>\r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y_pred_prob])))
+                    try:
+                        f.write("year, {}, months, <{}>, gender, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in gender])))
+                        f.write("year, {}, months, <{}>, ethnicity, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in ethnicity])))
+                        f.write("year, {}, months, <{}>, subject, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in subject_id])))
+                    except:
+                        pass
 
-                f.write("year, {}, best_params, <{}> \r\n".format(str(year), best_params))
+                    f.write("year, {}, months, <{}>, best_params, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), best_params))
 
 
         print("Finished {}".format(dump_filename))
@@ -2269,6 +2274,8 @@ if __name__=="__main__":
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
     parser.add_argument('--n_threads', type=int, default=-1, help="Number of threads to use for CPU model searches.")
+    parser.add_argument('--test_month_interval', type=int, default=2, help="determines the test intervals for the first_years train_type")
+
     args = parser.parse_args()
     
     if isinstance(args.random_seed, int):
@@ -2353,5 +2360,5 @@ if __name__=="__main__":
                 elif train_type=='first_years':
                     main(random_seed=seed, max_time=args.max_time, test_size=args.test_size, 
                         level=args.level, representation=args.representation, target=target, 
-                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, training_years=[2010], output_dir=args.output_dir)
+                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, training_years=[2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
 
