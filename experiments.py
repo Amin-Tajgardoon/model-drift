@@ -1786,10 +1786,10 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
         model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
 
         # Record what the best performing model was
-        # model_filename=os.path.join(prefix,"bestmodel-style_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.pkl".format(modeltype.upper(), representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
-        # print(model_filename)
-        # with open(model_filename, 'wb') as f:
-        #     pickle.dump(model, f)
+        model_filename=os.path.join(output_dir, prefix+"bestmodel-first-years-style_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.pkl".format(modeltype.upper(), representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
+        print(model_filename)
+        with open(model_filename, 'wb') as f:
+            pickle.dump(model, f)
 
         years_set=set(years_df['year'].values.tolist())
         ## exclude any year that is smaller than training_years
