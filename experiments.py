@@ -1602,7 +1602,8 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
 
             C_values = np.linspace(.001, 100, num = 3)
             penalties = ['l2', 'l1']
-            tol_values = np.linspace(.0001, 1, num = 11)
+            # tol_values = np.linspace(.0001, 1, num = 11)
+            tol_values = np.logspace(-4, 0, num = 5)
             loss = ['hinge','squared_hinge']
             multi_class = ['ovr', 'crammer_singer']
 
@@ -1617,8 +1618,9 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             model = SVC()
 
             kernel = ['rbf']
-            C_range = np.logspace(-2, 10, 13)
-            gamma_range = np.logspace(-9, 3, 13)
+            C_range = np.logspace(-3, 3, 7)
+            # gamma_range = np.logspace(-9, 3, 13)
+            gamma_range = np.logspace(-5, 1, 7)
 
             random_grid = {'kernel':kernel,
                            'C':C_range,
