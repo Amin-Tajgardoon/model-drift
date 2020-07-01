@@ -17,10 +17,7 @@ import sys
 
 import pandas as pd
 import numpy as np
-# import h5py
 import os
-# import pandas.io.sql as psql
-print("1")
 
 from sklearn.svm import SVC, LinearSVC, OneClassSVM
 from sklearn.neural_network import MLPClassifier
@@ -34,18 +31,6 @@ import sklearn.model_selection
 from sklearn.preprocessing import StandardScaler
 from scipy import stats
 
-
-# print("2")
-# # for LSTM
-# from sklearn.model_selection import ParameterSampler
-
-
-# print("2.5")
-# # import tensorflow as tf
-# # from keras.layers import Input, LSTM, GRU, Dense, Bidirectional, merge
-# # from keras.models import Model
-# # from keras import backend as K
-
 # #for GRU-D
 # import torch
 # print("2.75")
@@ -54,7 +39,6 @@ from scipy import stats
 # except:
 #     from utils.GRUD import *
 
-print("3")
 # try:
 #     from EmbeddingAutoencoder import ae_tf, ae_keras, rnn_tf, rnn_tf2
 # except:
@@ -70,7 +54,6 @@ import matplotlib.pyplot as plt
 
 import time
 
-print("4")
 
 
 # # list global variables
@@ -127,6 +110,8 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
     global common_indices
     global y_df
 
+    t0 = time.time()
+
     if len(data_dir)>0:
         DATA_DIR=os.path.join(data_dir, 'all_hourly_data.h5')
     else:
@@ -138,6 +123,9 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
 
     df=pd.read_hdf(DATA_DIR, key='vitals_labs')
 
+    t1 = time.time()
+    print("finished reading vitals_labs features in {:10.1f} seconds.".format(t1-t0))
+
     # add the hours_in index as a column
     # if not(isinstance(df.index.names[3], str)):
     #     col_name=df.index.names[3].decode()
@@ -146,7 +134,8 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
     # print(df.index.values.shape)
     idx = pd.IndexSlice
 
-    # outcomes_df= pd.read_hdf(DATA_DIR, key='outcomes')
+    t0 = time.time()
+
     if len(data_dir)>0:
         OUTCOMES_DIR=os.path.join(data_dir, 'static_data.csv')
     else:
@@ -156,11 +145,20 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
         if not(os.path.isfile(OUTCOMES_DIR)):
             raise('Not a valid directory')
     y_df=pd.read_csv(OUTCOMES_DIR, index_col=0)
+    
+    t1 = time.time()
+    print("finished reading static data features in {:10.1f} seconds.".format(t1-t0))
+
+    t0 = time.time()
 
     y_df.drop(columns='icustay_id', inplace=True)
     y_df=y_df.set_index(['hadm_id'], append=True)
     #rename the index to match other columns
     
+    t1 = time.time()
+    print("finished reading static data features in {:10.1f} seconds.".format(t1-t0))
+
+
     # (Amin) why encode() names?! remove for now
     #     y_df.index.rename([name.encode() for name in y_df.index.names], inplace=True)
     y_df.index.rename([name for name in y_df.index.names], inplace=True)
@@ -183,13 +181,24 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
 
     # y_df.loc[:, (slice(None), slice(None), slice(None), 'los_icu')]*=24 #icu data from days to hours
 
+    t0 = time.time()
+
     y_df.loc[:, 'los_icu']*=24 #icu data from days to hours
+
+    t1 = time.time()
+    print("convereted los_icu from days to hours in {:10.1f} seconds.".format(t1-t0))
+
+
+    t0 = time.time()
 
     # mask = y_df.loc[:,(slice(None), slice(None), slice(None), 'los_icu')].values>max_time+gap_time
     mask = y_df.loc[:, 'los_icu'].values > max_time+gap_time
 
     # y_df=y_df.loc[idx[mask, :, :], :]
     y_df=y_df.loc[idx[mask, :], :]
+
+    t1 = time.time()
+    print("filtered by los_icu in {:10.1f} seconds.".format(t1-t0))
 
 
     outcomes_df=y_df.copy()
@@ -209,16 +218,26 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
     # y_df.loc[:, idx['F','F','F','F']]=[1 if 'f' in item.lower() else 0 for item in name]
     # y_df.loc[:, idx['M','M','M','M']]=[1 if 'm' in item.lower() else 0 for item in name]
 
+    t0 = time.time()
+
     y_df = pd.get_dummies(y_df, columns=['gender', 'race'])
+
+    t1 = time.time()
+    print("created dummy demographic features in {:10.1f} seconds.".format(t1-t0))
+
 
     common_indices=outcomes_df.index.tolist()
     # common_indices=list(set(outcomes_df.index.get_level_values(outcomes_df.index.names.index('hadm_id'.encode()))).intersection(set(df.index.get_level_values(df.index.names.index('hadm_id')))))
     common_indices=list(set(outcomes_df.index.get_level_values('hadm_id')).intersection(set(df.index.get_level_values('hadm_id'))))
 
+    t0 = time.time()
 
     #apply common indices
     df=df.loc[idx[:, common_indices, :,:],:]
     y_df=y_df.loc[idx[:, common_indices, :], :]
+
+    t1 = time.time()
+    print("applied common indices in {:10.1f} seconds.".format(t1-t0))
 
 
     filtered_df=df.copy()
@@ -226,9 +245,13 @@ def load_data(max_time=24, gap_time=12, data_dir=""):
     label_df=outcomes_df.copy()
 
     # label_df.columns=label_df.columns.droplevel([0,1,2]) # only do this once
+    t0 = time.time()
 
     label_df['los_3']=np.zeros((len(label_df),1)).ravel()
     label_df.loc[label_df['los_icu']>=3*24, 'los_3']=1
+
+    t1 = time.time()
+    print("created los_3 labels in {:10.1f} seconds.".format(t1-t0))
 
 
     return
@@ -1567,6 +1590,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                     }
         
         elif modeltype == 'iforest':
+            ## outlier detection
             model=IsolationForest(random_state=random_state)
 
             n_estimators = [50, 100, 500, 1000] #[int(x) for x in np.linspace(start = 50, stop = 1000, num = 20)]
@@ -1582,11 +1606,11 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             print('Logistic Regression model!!')
             model=LogisticRegression()
 
-            C_values = np.linspace(.001, 100, num = 3)
+            C_values = np.logspace(-4, 1, 6) # np.linspace(.001, 100, num = 3)
             penalties = ['l2', 'l1']
-            tol_values = np.linspace(.00001, 1, num = 11)
+            tol_values = np.logspace(-5, 0, 6) # np.linspace(.00001, 1, num = 11)
             solvers = ['liblinear','saga']
-            max_iter = np.linspace(10, 1000, num = 11)
+            max_iter = np.logspace(1, 3, 3) # np.linspace(10, 1000, num = 10)
             warm_starts = [True, False]
 
             random_grid = {'C':C_values,
@@ -1618,9 +1642,9 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             model = SVC()
 
             kernel = ['rbf']
-            C_range = np.logspace(-3, 3, 7)
+            C_range = np.logspace(-2, 2, 5)
             # gamma_range = np.logspace(-9, 3, 13)
-            gamma_range = np.logspace(-5, 1, 7)
+            gamma_range = np.logspace(-5, -3, 3) #np.logspace(-5, 1, 7)
 
             random_grid = {'kernel':kernel,
                            'C':C_range,
@@ -1628,18 +1652,38 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                           }
 
         elif modeltype == '1class_svm':
+            ## outlier detection
             model = OneClassSVM()
 
             kernel = ['rbf']
-            gamma_range = np.logspace(-5, 1, 7)
-            tol_values = np.logspace(-4, 0, num = 5)
-            nu_values = np.linspace(0.1, 0.5, 5)    
+            gamma_range = np.logspace(-5, -3, 3)
+            # tol_values = np.logspace(-4, 0, num = 5)
+            nu_values = [0.05, 0.1, 0.2, 0.5] #np.linspace(0.1, 0.5, 5)    
 
             random_grid = {'kernel': kernel,
                            'gamma': gamma_range,
-                           'tol':tol_values,
+                        #    'tol':tol_values,
                            'nu': nu_values
                           }
+
+        elif modeltype == '1class_svm_novel':
+            ## Novelty detection
+            model = OneClassSVM()
+
+            kernel = ['rbf']
+            gamma_range = np.logspace(-5, -3, 3)
+            # tol_values = np.logspace(-4, 0, num = 5)
+            nu_values = [0.05, 0.1, 0.2, 0.5] #np.linspace(0.1, 0.5, 5)    
+
+            random_grid = {'kernel': kernel,
+                           'gamma': gamma_range,
+                        #    'tol':tol_values,
+                           'nu': nu_values
+                          }
+
+            ## filter X and y to exclude outliers, i.e. exclude y=1
+            X = X.loc[y==0,:]
+            y = y[y==0]
 
 
         elif modeltype == 'mlp':
@@ -1673,7 +1717,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             raise Exception('modeltype = "%s" is invalid' % modeltype)
 
         
-        if modeltype in ['1class_svm', 'iforest']:
+        if modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
             ## auroc doesn't work for one-class models
             scoring=sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
             y[y==1] = -1
@@ -1835,7 +1879,7 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
                     elif modeltype in ['svm', 'rbf-svm']:
                         y_pred_prob=model.decision_function(X_df)
                         pred=model.predict(X_df)
-                    elif modeltype in ['1class_svm', 'iforest']:
+                    elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
                         ## one-class classifier
                         y_pred_prob= -1.0 * model.decision_function(X_df)
                         pred= model.predict(X_df)
@@ -2311,7 +2355,7 @@ if __name__=="__main__":
     parser.add_argument('--representation', type=str, default='raw', choices=['raw', 'pca', 'umap', 'autoencoder', 'nlp'])
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
-    parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', 'iforest', 'lstm', 'gru', 'grud']")
+    parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
     parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years'], four training paradigms")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
