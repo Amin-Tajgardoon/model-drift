@@ -25,10 +25,12 @@ from sklearn.decomposition import PCA
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, LassoCV, LogisticRegressionCV
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
-from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold
+from sklearn.naive_bayes import GaussianNB
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold, train_test_split
 import sklearn.metrics
 import sklearn.model_selection
 from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import label_binarize
 from scipy import stats
 
 # #for GRU-D
@@ -78,6 +80,42 @@ train_means=None
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+
+def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
+
+    labels = np.unique(y_true)
+    if len(labels) > 2:
+        raise ValueError("Only binary classification is supported. "
+                         "Provided labels %s." % labels)
+    y_true = label_binarize(y_true, labels)[:, 0]
+
+    if bin_strategy == 'quantile':  ## equal-frequency bins 
+        # Determine bin edges by distribution of data 
+        quantiles = np.linspace(0, 1, n_bins + 1)
+        bins = np.percentile(y_prob, quantiles * 100)
+        bins[-1] = bins[-1] + 1e-8
+    elif bin_strategy == 'uniform': ## equal-width bins
+        bins = np.linspace(0., 1. + 1e-8, n_bins + 1)
+    else:
+        raise ValueError("Invalid entry to 'bin_strategy' input. bin_Strategy "
+                         "must be either 'quantile' or 'uniform'.")
+
+    binids = np.digitize(y_prob, bins) - 1
+
+    bin_sums = np.bincount(binids, weights=y_prob, minlength=len(bins))
+    bin_true = np.bincount(binids, weights=y_true, minlength=len(bins))
+    bin_total = np.bincount(binids, minlength=len(bins))
+
+    nonzero = bin_total != 0
+    prob_true = (bin_true[nonzero] / bin_total[nonzero])
+    prob_pred = (bin_sums[nonzero] / bin_total[nonzero])
+    
+    abs_error = np.abs(prob_pred - prob_true)
+
+    expected_error = np.average(abs_error, weights=(bin_total / y_true.size)[nonzero])
+    max_error = np.max(abs_error)
+
+    return prob_true, prob_pred, expected_error, max_error
 
 def get_globals():
     """
@@ -1763,6 +1801,12 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                            'algorithm':algorithm
                           }
 
+        elif modeltype == 'nb':
+            model = GaussianNB()
+            
+            smoothing_vals = np.logspace(-9, 0, 4)
+            random_grid = {"var_smoothing": smoothing_vals}
+
         else:
             raise Exception('modeltype = "%s" is invalid' % modeltype)
 
@@ -2383,7 +2427,7 @@ def main_no_years(random_seed=None, max_time=24, test_size=0.2, level='itemid', 
 
     return
 
-def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representation='raw',
+def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representation='raw', test_size=0.2,
          target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[]):
     """
     This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
@@ -2418,8 +2462,11 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     #drop hours in row
     filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
-    train_index=sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
+    source_index=sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
 
+    train_index, source_test_index = train_test_split(source_index,  test_size=test_size, random_state=int(random_seed), 
+                                                stratify=label_df.loc[idx[:, source_index], target].values.tolist())
+    
 
     for modeltype in model_types:
 
@@ -2450,7 +2497,8 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
         if (test_hospitals is None or len(test_hospitals) == 0):
             hosp_set=set(sites_df['hospital'].values.tolist())
             ## exclude any train hospitals
-            test_hospitals=set([h for h in hosp_set if h not in train_hospitals])
+            # test_hospitals=set([h for h in hosp_set if h not in train_hospitals])
+            test_hospitals=hosp_set
 
         dump_filename=os.path.join(output_dir, 
                                     prefix + "result_hospital-style_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
@@ -2458,8 +2506,11 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
                                     )
         with open(dump_filename, 'w') as f:
             for hospital in tqdm(sorted(test_hospitals)):
-            
-                test_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
+
+                if hospital in train_hospitals:
+                    test_index = source_test_index
+                else:           
+                    test_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
                 # get the X and y data for testing
                 X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
                     filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
@@ -2479,7 +2530,7 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
                     y=np.squeeze(np.asarray(labels))
                     pred=np.argmax(np.squeeze(predictions), axis=1)
                     # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-                elif modeltype in ['lr', 'rf', 'mlp', 'knn']:
+                elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
                     y_pred_prob=model.predict_proba(X_df)[:,1]
                     pred=model.predict(X_df)
                 elif modeltype in ['svm', 'rbf-svm']:
@@ -2496,15 +2547,34 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
 
                 try:
                     AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-                    F1=sklearn.metrics.f1_score(y, pred)
-                    ACC=sklearn.metrics.accuracy_score(y, pred)
+                except:
+                    AUC=np.nan
+                try:
                     APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
                 except:
-                    AUC=F1=ACC=APR=np.nan
+                    APR=np.nan
+                try:
+                    F1=sklearn.metrics.f1_score(y, pred)
+                    ACC=sklearn.metrics.accuracy_score(y, pred)
+                except:
+                    F1=ACC=np.nan
+                try:
+                    _,_,ECE,MCE = get_calibration_metrics(y, y_pred_prob, 10, 'quantile')
+                except Exception as err:
+                    print("couldn't compute ECE,MCE: {}".format(err))
+                    ECE = MCE = np.nan
+                try:
+                    O_E = np.mean(y)/np.mean(y_pred_prob)
+                except:
+                    O_E = np.nan
+
                 f.write("hospital, {}, AUC, {} \r\n".format(str(hospital), str(AUC)))
                 f.write("hospital, {}, F1, {} \r\n".format(str(hospital), str(F1)))
                 f.write("hospital, {}, Acc, {} \r\n".format(str(hospital), str(ACC)))
                 f.write("hospital, {}, APR, {} \r\n".format(str(hospital), str(APR)))
+                f.write("hospital, {}, ECE, {} \r\n".format(str(hospital), str(ECE)))
+                f.write("hospital, {}, MCE, {} \r\n".format(str(hospital), str(MCE)))
+                f.write("hospital, {}, O_E, {} \r\n".format(str(hospital), str(O_E)))
 
                 f.write("hospital, {}, label, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in y])))
                 f.write("hospital, {}, pred, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in pred])))
