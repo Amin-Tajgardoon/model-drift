@@ -1922,45 +1922,17 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
                         representation, is_time_series, impute=not(modeltype=='grud'),
                         timeseries_vect=timeseries_vect, representation_vect=representation_vect)
 
-                    # Different models have different score funcions
-                    if modeltype in ['lstm','gru']:
-                        y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
-                        pred = list(map(int, y_pred_prob > 0.5))
-                    elif modeltype=='grud':
-                        #create test_dataloader X_df, y_df
-                        test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+                    y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
-                        predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
-                        y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
-                        y=np.squeeze(np.asarray(labels))
-                        pred=np.argmax(np.squeeze(predictions), axis=1)
-                        # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-                    elif modeltype in ['lr', 'rf', 'mlp', 'knn']:
-                        y_pred_prob=model.predict_proba(X_df)[:,1]
-                        pred=model.predict(X_df)
-                    elif modeltype in ['svm', 'rbf-svm']:
-                        y_pred_prob=model.decision_function(X_df)
-                        pred=model.predict(X_df)
-                    elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
-                        ## one-class classifier
-                        y_pred_prob= -1.0 * model.decision_function(X_df)
-                        pred= model.predict(X_df)
-                        pred[pred==1] = 0
-                        pred[pred==-1] = 1
-                    else:
-                        raise Exception('dont know proba function for classifier = "%s"' % modeltype)
+                    AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
 
-                    try:
-                        AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-                        F1=sklearn.metrics.f1_score(y, pred)
-                        ACC=sklearn.metrics.accuracy_score(y, pred)
-                        APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-                    except:
-                        AUC=F1=ACC=APR=np.nan
                     f.write("year, {}, months, <{}>, AUC, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(AUC)))
                     f.write("year, {}, months, <{}>, F1, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(F1)))
                     f.write("year, {}, months, <{}>, Acc, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(ACC)))
                     f.write("year, {}, months, <{}>, APR, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(APR)))
+                    f.write("year, {}, months, <{}>, ECE, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(ECE)))
+                    f.write("year, {}, months, <{}>, MCE, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(MCE)))
+                    f.write("year, {}, months, <{}>, O_E, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(O_E)))
 
                     f.write("year, {}, months, <{}>, label, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y])))
                     f.write("year, {}, months, <{}>, pred, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in pred])))
@@ -2485,56 +2457,9 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
                     representation, is_time_series, impute=not(modeltype=='grud'),
                     timeseries_vect=timeseries_vect, representation_vect=representation_vect)
 
-                # Different models have different score funcions
-                if modeltype in ['lstm','gru']:
-                    y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
-                    pred = list(map(int, y_pred_prob > 0.5))
-                elif modeltype=='grud':
-                    #create test_dataloader X_df, y_df
-                    test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+                y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
-                    predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
-                    y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
-                    y=np.squeeze(np.asarray(labels))
-                    pred=np.argmax(np.squeeze(predictions), axis=1)
-                    # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-                elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
-                    y_pred_prob=model.predict_proba(X_df)[:,1]
-                    pred=model.predict(X_df)
-                elif modeltype in ['svm', 'rbf-svm']:
-                    y_pred_prob=model.decision_function(X_df)
-                    pred=model.predict(X_df)
-                elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
-                    ## one-class classifier
-                    y_pred_prob= -1.0 * model.decision_function(X_df)
-                    pred= model.predict(X_df)
-                    pred[pred==1] = 0
-                    pred[pred==-1] = 1
-                else:
-                    raise Exception('dont know proba function for classifier = "%s"' % modeltype)
-
-                try:
-                    AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-                except:
-                    AUC=np.nan
-                try:
-                    APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-                except:
-                    APR=np.nan
-                try:
-                    F1=sklearn.metrics.f1_score(y, pred)
-                    ACC=sklearn.metrics.accuracy_score(y, pred)
-                except:
-                    F1=ACC=np.nan
-                try:
-                    _,_,ECE,MCE = get_calibration_metrics(y, y_pred_prob, 10, 'quantile')
-                except Exception as err:
-                    print("couldn't compute ECE,MCE: {}".format(err))
-                    ECE = MCE = np.nan
-                try:
-                    O_E = np.mean(y)/np.mean(y_pred_prob)
-                except:
-                    O_E = np.nan
+                AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
 
                 f.write("hospital, {}, AUC, {} \r\n".format(str(hospital), str(AUC)))
                 f.write("hospital, {}, F1, {} \r\n".format(str(hospital), str(F1)))
@@ -2651,63 +2576,9 @@ def main_icu_type(random_seed=None, max_time=24, level='itemid', representation=
                     representation, is_time_series, impute=not(modeltype=='grud'),
                     timeseries_vect=timeseries_vect, representation_vect=representation_vect)
 
-                # Different models have different score funcions
-                if modeltype in ['lstm','gru']:
-                    y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
-                    pred = list(map(int, y_pred_prob > 0.5))
-                elif modeltype=='grud':
-                    #create test_dataloader X_df, y_df
-                    test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+                y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
-                    predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
-                    y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
-                    y=np.squeeze(np.asarray(labels))
-                    pred=np.argmax(np.squeeze(predictions), axis=1)
-                    # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-                elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
-                    y_pred_prob=model.predict_proba(X_df)[:,1]
-                    pred=model.predict(X_df)
-                elif modeltype in ['svm', 'rbf-svm']:
-                    y_pred_prob=model.decision_function(X_df)
-                    pred=model.predict(X_df)
-                elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
-                    ## one-class classifier
-                    y_pred_prob= -1.0 * model.decision_function(X_df)
-                    pred= model.predict(X_df)
-                    pred[pred==1] = 0
-                    pred[pred==-1] = 1
-                
-                else:
-                    raise Exception('dont know proba function for classifier = "%s"' % modeltype)
-
-                try:
-                    AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-                except:
-                    AUC=np.nan
-                try:
-                    APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-                except:
-                    APR=np.nan
-                try:
-                    F1=sklearn.metrics.f1_score(y, pred)
-                    ACC=sklearn.metrics.accuracy_score(y, pred)
-                except:
-                    F1=ACC=np.nan
-                try:
-                    if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
-                        ## min-max scaling of y_pred
-                        p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
-                    _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
-                except Exception as err:
-                    print("couldn't compute ECE,MCE: {}".format(err))
-                    ECE = MCE = np.nan
-                try:
-                    if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
-                        ## min-max scaling of y_pred
-                        p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
-                    O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
-                except:
-                    O_E = np.nan
+                AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
 
                 f.write("icu_type, {}, AUC, {} \r\n".format(str(icu_type), str(AUC)))
                 f.write("icu_type, {}, F1, {} \r\n".format(str(icu_type), str(F1)))
@@ -2732,6 +2603,68 @@ def main_icu_type(random_seed=None, max_time=24, level='itemid', representation=
         print("Finished {}".format(dump_filename))
 
     return
+
+def get_measures(y, y_pred_prob, pred, modeltype):
+    try:
+        AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
+    except:
+        AUC=np.nan
+    try:
+        APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
+    except:
+        APR=np.nan
+    try:
+        F1=sklearn.metrics.f1_score(y, pred)
+        ACC=sklearn.metrics.accuracy_score(y, pred)
+    except:
+        F1=ACC=np.nan
+    try:
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+            ## min-max scaling of y_pred
+            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
+    except Exception as err:
+        print("couldn't compute ECE,MCE: {}".format(err))
+        ECE = MCE = np.nan
+    try:
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+            ## min-max scaling of y_pred
+            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
+    except:
+        O_E = np.nan
+    return AUC, F1, ACC, APR, ECE, MCE, O_E
+
+def get_prediction(modeltype, model, X_df, y, subject_id):
+    # Different models have different score funcions
+    if modeltype in ['lstm','gru']:
+        y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
+        pred = list(map(int, y_pred_prob > 0.5))
+    elif modeltype=='grud':
+        #create test_dataloader X_df, y_df
+        test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+
+        predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
+        y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
+        y=np.squeeze(np.asarray(labels))
+        pred=np.argmax(np.squeeze(predictions), axis=1)
+        # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
+    elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
+        y_pred_prob=model.predict_proba(X_df)[:,1]
+        pred=model.predict(X_df)
+    elif modeltype in ['svm', 'rbf-svm']:
+        y_pred_prob=model.decision_function(X_df)
+        pred=model.predict(X_df)
+    elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
+        ## one-class classifier
+        y_pred_prob= -1.0 * model.decision_function(X_df)
+        pred= model.predict(X_df)
+        pred[pred==1] = 0
+        pred[pred==-1] = 1
+
+    else:
+        raise Exception('dont know proba function for classifier = "%s"' % modeltype)
+    return y, y_pred_prob, pred
 
 
 # # Main
