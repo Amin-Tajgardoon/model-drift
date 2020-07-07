@@ -16,7 +16,7 @@ set TARGETS=mort_icu los_3
 python -u %CODE_DIR%/experiments.py ^
     --data_dir %DATA_DIR% ^
     --output_dir %OUTPUT_DIR% ^
-    --representation raw ^
+    --representation pca ^
     --train_types %TRAIN_TYPES% ^
     --model_types %MODEL_TYPES% ^
     --random_seed %SEED% ^

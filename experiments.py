@@ -206,8 +206,6 @@ def load_data(max_time=24, gap_time=12, data_dir="", load_filtered_data=False):
     # print(df.index.values.shape)
     idx = pd.IndexSlice
 
-    t0 = time.time()
-
     if len(data_dir)>0:
         OUTCOMES_DIR=os.path.join(data_dir, 'static_data.csv')
     else:
@@ -218,19 +216,10 @@ def load_data(max_time=24, gap_time=12, data_dir="", load_filtered_data=False):
             raise('Not a valid directory')
     y_df=pd.read_csv(OUTCOMES_DIR, index_col=0)
     
-    t1 = time.time()
-    print("finished reading static data features in {:10.1f} seconds.".format(t1-t0))
-
-    t0 = time.time()
-
     y_df.drop(columns='icustay_id', inplace=True)
     y_df=y_df.set_index(['hadm_id'], append=True)
     #rename the index to match other columns
     
-    t1 = time.time()
-    print("finished reading static data features in {:10.1f} seconds.".format(t1-t0))
-
-
     # (Amin) why encode() names?! remove for now
     #     y_df.index.rename([name.encode() for name in y_df.index.names], inplace=True)
     y_df.index.rename([name for name in y_df.index.names], inplace=True)
@@ -253,25 +242,13 @@ def load_data(max_time=24, gap_time=12, data_dir="", load_filtered_data=False):
 
     # y_df.loc[:, (slice(None), slice(None), slice(None), 'los_icu')]*=24 #icu data from days to hours
 
-    t0 = time.time()
-
     y_df.loc[:, 'los_icu']*=24 #icu data from days to hours
-
-    t1 = time.time()
-    print("convereted los_icu from days to hours in {:10.1f} seconds.".format(t1-t0))
-
-
-    t0 = time.time()
 
     # mask = y_df.loc[:,(slice(None), slice(None), slice(None), 'los_icu')].values>max_time+gap_time
     mask = y_df.loc[:, 'los_icu'].values > max_time+gap_time
 
     # y_df=y_df.loc[idx[mask, :, :], :]
     y_df=y_df.loc[idx[mask, :], :]
-
-    t1 = time.time()
-    print("filtered by los_icu in {:10.1f} seconds.".format(t1-t0))
-
 
     outcomes_df=y_df.copy()
 
@@ -290,13 +267,7 @@ def load_data(max_time=24, gap_time=12, data_dir="", load_filtered_data=False):
     # y_df.loc[:, idx['F','F','F','F']]=[1 if 'f' in item.lower() else 0 for item in name]
     # y_df.loc[:, idx['M','M','M','M']]=[1 if 'm' in item.lower() else 0 for item in name]
 
-    t0 = time.time()
-
     y_df = pd.get_dummies(y_df, columns=['gender', 'race'])
-
-    t1 = time.time()
-    print("created dummy demographic features in {:10.1f} seconds.".format(t1-t0))
-
 
     common_indices=outcomes_df.index.tolist()
     # common_indices=list(set(outcomes_df.index.get_level_values(outcomes_df.index.names.index('hadm_id'.encode()))).intersection(set(df.index.get_level_values(df.index.names.index('hadm_id')))))
@@ -317,13 +288,10 @@ def load_data(max_time=24, gap_time=12, data_dir="", load_filtered_data=False):
     label_df=outcomes_df.copy()
 
     # label_df.columns=label_df.columns.droplevel([0,1,2]) # only do this once
-    t0 = time.time()
 
     label_df['los_3']=np.zeros((len(label_df),1)).ravel()
     label_df.loc[label_df['los_icu']>=3*24, 'los_3']=1
 
-    t1 = time.time()
-    print("created los_3 labels in {:10.1f} seconds.".format(t1-t0))
 
 
     return
@@ -2592,6 +2560,180 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
 
     return
 
+
+def main_icu_type(random_seed=None, max_time=24, level='itemid', representation='raw', test_size=0.2,
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_icu_types=[], output_dir="", test_icu_types=[]):
+    """
+    This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
+
+    """
+    global filtered_df
+    global label_df
+    global sites_df
+    global scaler
+    global train_means
+
+    np.random.seed(random_seed)
+
+
+
+
+    # (Amin) not using torch yet
+    # torch.manual_seed(random_seed)
+
+
+
+
+
+    # print("Loading the data.")
+    # load_data(max_time=max_time, data_dir=data_dir)
+
+     # hours for windowing
+    idx = pd.IndexSlice
+    filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
+                                              (filtered_df.index.get_level_values('hours_in') <= max_time)]
+
+    #drop hours in row
+    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+
+    source_index=sites_df[sites_df['icu_category'].isin(train_icu_types)].index.tolist()
+
+    train_index, source_test_index = train_test_split(source_index,  test_size=test_size, random_state=int(random_seed), 
+                                                stratify=label_df.loc[idx[:, source_index], target].values.tolist())
+    
+
+    for modeltype in model_types:
+
+        is_time_series = modeltype in ['lstm', 'gru', 'grud']
+        # is_time_series=True
+
+        print("data preprocessing")
+
+        X_df, y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
+            filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
+            target, representation, is_time_series, impute=not(modeltype=='grud'))
+
+        print(X_df.shape)
+
+        print("Finding the best %s model using a random search" % modeltype.upper())
+
+        model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+
+        # Record what the best performing model was
+        model_filename=os.path.join(output_dir, 
+                                    prefix + "bestmodel-icuType-style_trainICUtypes_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
+                                        modeltype.upper(), "-".join(train_icu_types), representation, level, str(random_seed), str(target))
+                                    )
+        print(model_filename)
+        with open(model_filename, 'wb') as f:
+            pickle.dump(model, f)
+
+        if (test_icu_types is None or len(test_icu_types) == 0):
+            icu_types=set(sites_df['icu_category'].values.tolist())
+            test_icu_types=icu_types
+
+        dump_filename=os.path.join(output_dir, 
+                                    prefix + "result_icuType-style_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
+                                        "-".join(train_icu_types), modeltype.upper(), representation, level, str(random_seed), str(target))
+                                    )
+        with open(dump_filename, 'w') as f:
+            for icu_type in tqdm(sorted(test_icu_types)):
+                
+                print("ICU_TYPE: {}".format(icu_type))
+
+                if icu_type in train_icu_types:
+                    test_index = source_test_index
+                else:           
+                    test_index=sites_df[sites_df['icu_category'] == icu_type].index.tolist()
+                # get the X and y data for testing
+                X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                    filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                    representation, is_time_series, impute=not(modeltype=='grud'),
+                    timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+
+                # Different models have different score funcions
+                if modeltype in ['lstm','gru']:
+                    y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
+                    pred = list(map(int, y_pred_prob > 0.5))
+                elif modeltype=='grud':
+                    #create test_dataloader X_df, y_df
+                    test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+
+                    predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
+                    y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
+                    y=np.squeeze(np.asarray(labels))
+                    pred=np.argmax(np.squeeze(predictions), axis=1)
+                    # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
+                elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
+                    y_pred_prob=model.predict_proba(X_df)[:,1]
+                    pred=model.predict(X_df)
+                elif modeltype in ['svm', 'rbf-svm']:
+                    y_pred_prob=model.decision_function(X_df)
+                    pred=model.predict(X_df)
+                elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
+                    ## one-class classifier
+                    y_pred_prob= -1.0 * model.decision_function(X_df)
+                    pred= model.predict(X_df)
+                    pred[pred==1] = 0
+                    pred[pred==-1] = 1
+                
+                else:
+                    raise Exception('dont know proba function for classifier = "%s"' % modeltype)
+
+                try:
+                    AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
+                except:
+                    AUC=np.nan
+                try:
+                    APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
+                except:
+                    APR=np.nan
+                try:
+                    F1=sklearn.metrics.f1_score(y, pred)
+                    ACC=sklearn.metrics.accuracy_score(y, pred)
+                except:
+                    F1=ACC=np.nan
+                try:
+                    if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+                        ## min-max scaling of y_pred
+                        p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+                    _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
+                except Exception as err:
+                    print("couldn't compute ECE,MCE: {}".format(err))
+                    ECE = MCE = np.nan
+                try:
+                    if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+                        ## min-max scaling of y_pred
+                        p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+                    O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
+                except:
+                    O_E = np.nan
+
+                f.write("icu_type, {}, AUC, {} \r\n".format(str(icu_type), str(AUC)))
+                f.write("icu_type, {}, F1, {} \r\n".format(str(icu_type), str(F1)))
+                f.write("icu_type, {}, Acc, {} \r\n".format(str(icu_type), str(ACC)))
+                f.write("icu_type, {}, APR, {} \r\n".format(str(icu_type), str(APR)))
+                f.write("icu_type, {}, ECE, {} \r\n".format(str(icu_type), str(ECE)))
+                f.write("icu_type, {}, MCE, {} \r\n".format(str(icu_type), str(MCE)))
+                f.write("icu_type, {}, O_E, {} \r\n".format(str(icu_type), str(O_E)))
+
+                f.write("icu_type, {}, label, <{}> \r\n".format(str(icu_type), ",".join([str(i) for i in y])))
+                f.write("icu_type, {}, pred, <{}> \r\n".format(str(icu_type), ",".join([str(i) for i in pred])))
+                f.write("icu_type, {}, y_pred_prob, <{}>\r\n".format(str(icu_type), ",".join([str(i) for i in y_pred_prob])))
+                try:
+                    f.write("icu_type, {}, gender, <{}> \r\n".format(str(icu_type), ",".join([str(i) for i in gender])))
+                    f.write("icu_type, {}, ethnicity, <{}> \r\n".format(str(icu_type), ",".join([str(i) for i in ethnicity])))
+                    f.write("icu_type, {}, subject, <{}> \r\n".format(str(icu_type), ",".join([str(i) for i in subject_id])))
+                except:
+                    pass
+
+                f.write("icu_type, {}, best_params, <{}> \r\n".format(str(icu_type), best_params))
+
+        print("Finished {}".format(dump_filename))
+
+    return
+
+
 # # Main
 
 # In[ ]:
@@ -2602,6 +2744,8 @@ if __name__=="__main__":
     args are:
     random_seed=None, max_time=24, test_size=0.2, level='itemid', representation='raw', target='mort_icu', prefix="", modeltype='rf'
     """
+    t0 = time.time()
+    
     global n_threads
     print("in main")
     import argparse
@@ -2614,7 +2758,7 @@ if __name__=="__main__":
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
     parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
-    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise'], 5 training paradigms")
+    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type'], 6 training paradigms")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
@@ -2622,7 +2766,9 @@ if __name__=="__main__":
     parser.add_argument('--test_month_interval', type=int, default=2, help="determines the test intervals for the first_years train_type")
     parser.add_argument('--train_hospitals', type=str, nargs='+', default=["UPMCPUH"], help="choices: lsit of e.g. [UPMCPUH, UPMCSHY, UPMCMER]")
     parser.add_argument('--test_hospitals', type=str, nargs='+', default=None, help="choices: None or list of e.g. [UPMCPUH, UPMCSHY, UPMCMER]")
-    parser.add_argument('--load_filtered_data', type=int, default=0, help="0: False, 1: True")
+    parser.add_argument('--train_icu_types', type=str, nargs='+', default=["CTICU"], help="choices: lsit of e.g. [CTICU, MICU]")
+    parser.add_argument('--test_icu_types', type=str, nargs='+', default=["CTICU", "MICU"], help="choices: None or list of e.g. [CTICU, MICU]")
+    parser.add_argument('--load_filtered_data', type=int, default=0, help="loads stored data that includes features and outcomes, and common_indices. 0: False, 1: True")
 
 
 
@@ -2647,6 +2793,12 @@ if __name__=="__main__":
 
     if isinstance(args.test_hospitals, str):
         args.test_hospitals=[args.test_hospitals]
+
+    if isinstance(args.train_icu_types, str):
+        args.train_icu_types=[args.train_icu_types]
+
+    if isinstance(args.test_icu_types, str):
+        args.test_icu_types=[args.test_icu_types]
 
     if isinstance(args.gpu, int):
         args.gpu=[args.gpu]
@@ -2728,5 +2880,14 @@ if __name__=="__main__":
                     main_hospital_wise(random_seed=seed, max_time=args.max_time, 
                         level=args.level, representation=args.representation, target=target, 
                         prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
-                        train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, output_dir=args.output_dir)
+                        train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, test_size=0.2, output_dir=args.output_dir)
 
+                elif train_type=='icu_type':
+                    main_icu_type(random_seed=seed, max_time=args.max_time, 
+                        level=args.level, representation=args.representation, target=target, 
+                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
+                        train_icu_types=args.train_icu_types, test_icu_types=args.test_icu_types, test_size=0.2, output_dir=args.output_dir)
+
+
+    t1=time.time()
+    print("Total run-time =  {:10.1f} seconds.".format(t1-t0))
