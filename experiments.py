@@ -1695,7 +1695,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                           }
 
         elif modeltype == 'rbf-svm':
-            model = SVC()
+            model = SVC(probability=True)
 
             kernel = ['rbf']
             C_range = np.logspace(-2, 2, 5)
@@ -2652,9 +2652,12 @@ def get_prediction(modeltype, model, X_df, y, subject_id):
     elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
         y_pred_prob=model.predict_proba(X_df)[:,1]
         pred=model.predict(X_df)
-    elif modeltype in ['svm', 'rbf-svm']:
+    elif modeltype in ['svm']:
         y_pred_prob=model.decision_function(X_df)
         pred=model.predict(X_df)
+    elif modeltype in ['rbf-svm']:
+        y_pred_prob=model.predict_proba(X_df)[:,1]
+        pred=[1 if x >= 0.5 else 0 for x in y_pred_prob]
     elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
         ## one-class classifier
         y_pred_prob= -1.0 * model.decision_function(X_df)
