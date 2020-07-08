@@ -664,7 +664,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
     column_names=y_df.columns.tolist()
     
     if y_df.columns.nlevels != imputed_df.columns.nlevels:
-        print("making y_df levels equal to imputed_df ...")
+        # print("making y_df levels equal to imputed_df ...")
         
         for i in range((imputed_df.columns.nlevels - 1)):
             y_df=pd.concat([y_df], axis=1, keys=['OUTCOMES']) #.swaplevel(0, 1, 1).swaplevel(0, 1, 1)
@@ -677,7 +677,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
         y_df.columns.set_codes([[i for i in range(len(y_df.columns.levels[0]))] for i in range(3)],level=[0,1,2],inplace=True)
 
 
-    print("getting correct number of column levels")
+    # print("getting correct number of column levels")
 
     # make both dataframes have the same number of column levels
     while  len(y_df.columns.names)!=len(imputed_df.columns.names):
@@ -687,13 +687,13 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
             raise Exception("number of y_df columns is less than the number of imputed_df columns")
             y_df=pd.concat([y_df], names=['Firstlevel'])
 
-    print("got correct number of column levels")
+    # print("got correct number of column levels")
     # make both dataframes have the same column  names
     y_df.columns.names=imputed_df.columns.names
 
     
-    print("imputed_df #null cols=%d" % imputed_df.isna().all(axis=0).sum())
-    print("y_df #null cols=%d" % y_df.isna().all(axis=0).sum())
+    # print("imputed_df #null cols=%d" % imputed_df.isna().all(axis=0).sum())
+    # print("y_df #null cols=%d" % y_df.isna().all(axis=0).sum())
 
 
     del imputed_df
@@ -755,7 +755,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
             columns=X_df.columns.tolist()
 
 #             print(df_stds.loc[df_stds.values==0, :])
-            print(np.sum(df_stds.values==0))
+            # print(np.sum(df_stds.values==0))
 
 
 
@@ -765,9 +765,9 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
             # (Amin) line below introduces NAs/Infs if any(df_stds==0), impute with 0 after scaling
             data=(X_df[X_df.columns]-df_means)/df_stds
             count_na = np.sum(np.sum(np.isnan(data.astype(np.float32))))
-            print("data count_na: ", count_na)              
+            # print("data count_na: ", count_na)              
             X_df=pd.DataFrame(data, index=index, columns=columns)
-            print("finished scaler")
+            # print("finished scaler")
 
         else:
             X_df=X_df[keep_cols]
@@ -785,12 +785,12 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
         X_df.replace([np.inf, -np.inf], np.nan, inplace=True)
         count_na = X_df.isna().all(axis=0).sum()
         if count_na>0:
-            print("X_df #null cols=%d" % count_na)
-            print("imputing NAs with 0")
+            # print("X_df #null cols=%d" % count_na)
+            # print("imputing NAs with 0")
             X_df.fillna(0, inplace=True)
-            print("X_df #null cols=%d" % count_na)
+            # print("X_df #null cols=%d" % count_na)
 
-    print("X_df #null cols=%d" % X_df.isna().all(axis=0).sum())
+    # print("X_df #null cols=%d" % X_df.isna().all(axis=0).sum())
 
                 
     #keep this df for adding categorical data after
@@ -983,7 +983,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
         if embedding == 'raw':
             #fast join using numpy
             time_old=time.time()
-            print("before right")
+            # print("before right")
             # print(len([(item[0], item[1]) for item in X_df.index.tolist()]))
             # print(len(set([(item[0], item[1]) for item in X_df.index.tolist()])))
             # print(len(set([(item[0], item[1]) for item in X_df.index.tolist()]).intersection(set(y_df.index.tolist()))))
@@ -992,7 +992,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
 
     #         right = y_df.loc[[(item[0], item[1]) for item in X_df.index.tolist()], (slice(None), slice(None), ['M', 'F', 'asian', 'black','hispanic','white', 'other'])].values.astype(np.float32) # this line is introducing nans
             right = y_df.loc[[(item[0], item[1]) for item in X_df.index.tolist()], (slice(None), slice(None), demo_cols)].values.astype(np.float32)
-            print("after right")
+            # print("after right")
 
             left=X_df.values.astype(np.float32)
     #         column_names=X_df.columns.tolist()+y_df.loc[:,(slice(None), slice(None), ['M', 'F', 'asian', 'black','hispanic','white', 'other'])].columns.tolist()
@@ -1000,7 +1000,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
 
             time_old=time.time()
             result=np.concatenate((left, right), axis=1) #slow step timeit for combiing np.random.rand(15000, 10000) with np.random.rand(15000, 7)-> concat=50 iterations 192.49 s , hstack=50 iterations  212.61 , append=50 iterations 233.63 s
-            print(np.sum(np.sum(np.isnan(left))), np.sum(np.sum(np.isnan(right))), np.sum(np.sum(np.isnan(result.astype(np.float32)))))
+            # print(np.sum(np.sum(np.isnan(left))), np.sum(np.sum(np.isnan(right))), np.sum(np.sum(np.isnan(result.astype(np.float32)))))
 
             ind=pd.MultiIndex.from_tuples([(item[0], item[1]) for item in X_df.index.tolist()], names=['subject_id', 'hadm_id'])
             try:
@@ -1013,7 +1013,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
 
             X_df=pd.DataFrame(data=result, index=ind, columns=cols)
             # X_df.columns=columns_names
-            print("X_df after concat: ",np.sum(np.sum(np.isnan(X_df.values.astype(np.float32)))))
+            # print("X_df after concat: ",np.sum(np.sum(np.isnan(X_df.values.astype(np.float32)))))
 
 
 
@@ -2604,34 +2604,167 @@ def main_icu_type(random_seed=None, max_time=24, level='itemid', representation=
 
     return
 
+def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='itemid', representation='raw',
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2):
+    """
+    This function trains data on a single site from training_years hidenic and tests on data after training_years, once every test_month_interval month.
+
+    """
+    global filtered_df
+    global label_df
+    global years_df
+    global scaler
+    global train_means
+    global sites_df
+
+
+    np.random.seed(random_seed)
+
+
+    # (Amin) not using torch yet
+    # torch.manual_seed(random_seed)
+
+    # print("Loading the data.")
+    # load_data(max_time=max_time, data_dir=data_dir)
+
+     # hours for windowing
+    idx = pd.IndexSlice
+    filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
+                                              (filtered_df.index.get_level_values('hours_in') <= max_time)]
+
+    #drop hours in row
+    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+
+    if site_name in sites_df['hospital'].tolist():
+        site_index=sites_df[sites_df['hospital']==site_name].index.tolist()
+    elif site_name in sites_df['icu_category'].tolist():
+        site_index=sites_df[sites_df['icu_category']==site_name].index.tolist()
+
+    years_df_filtered=years_df.loc[years_df.index.intersection(site_index),:]
+
+    train_index=years_df_filtered[years_df_filtered['year'].isin(training_years)].index.tolist()
+
+    print("train_size", len(train_index))
+    
+    for modeltype in model_types:
+
+        is_time_series = modeltype in ['lstm', 'gru', 'grud']
+        # is_time_series=True
+
+        print("data preprocessing")
+        X_df, y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
+            filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
+            target, representation, is_time_series, impute=not(modeltype=='grud'))
+        print(X_df.shape)
+
+        print("Finding the best %s model using a random search" % modeltype.upper())
+
+        model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+
+        # Record what the best performing model was
+        model_filename=os.path.join(output_dir, 
+                                    prefix+"bestmodel_single-site-style_site_{}_train-years_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
+                                        site_name.upper(), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target)))
+        print(model_filename)
+        with open(model_filename, 'wb') as f:
+            pickle.dump(model, f)
+
+        years_set=set(years_df_filtered['year'].tolist())
+        ## exclude any year that is smaller than training_years
+        test_years=set([yr for yr in years_set if (yr > np.array(training_years)).all()])
+
+        dump_filename=os.path.join(output_dir, 
+                                    prefix+"result_single-site-style_site_{}_train-years_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
+                                        site_name.upper(), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target)))
+        with open(dump_filename, 'w') as f:
+            for year in tqdm(sorted(test_years)):
+                for month in range(1, 13, test_month_interval):
+                    test_months=np.arange(month, month+test_month_interval, 1)
+                    # open the trained model and test on years 2011 onwards, every 2 months
+                    test_index=years_df_filtered[(years_df_filtered['year'].isin([year])) &
+                                        (years_df_filtered['month'].isin(test_months))].index.tolist()
+                    # if year in training_years:
+                    #     #eliminate the training data from testing
+                    #     year_index=list(set(year_index).intersection(set(test_years)))
+
+                    # get the X and y data for testing
+                    X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                        filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                        representation, is_time_series, impute=not(modeltype=='grud'),
+                        timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+
+                    print("test_df shape: ", X_df.shape)
+
+                    y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
+                    print("actual pos rate:", np.mean(y))
+                    print("pred prob avrg:", np.mean(y_pred_prob))
+                    print("pred pos rate at 0.5 cutoff:", np.mean(pred))
+
+                    AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
+
+                    f.write("year, {}, months, <{}>, AUC, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(AUC)))
+                    f.write("year, {}, months, <{}>, F1, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(F1)))
+                    f.write("year, {}, months, <{}>, Acc, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(ACC)))
+                    f.write("year, {}, months, <{}>, APR, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(APR)))
+                    f.write("year, {}, months, <{}>, ECE, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(ECE)))
+                    f.write("year, {}, months, <{}>, MCE, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(MCE)))
+                    f.write("year, {}, months, <{}>, O_E, {} \r\n".format(str(year), ",".join([str(i) for i in test_months]), str(O_E)))
+
+                    f.write("year, {}, months, <{}>, label, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y])))
+                    f.write("year, {}, months, <{}>, pred, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in pred])))
+                    f.write("year, {}, months, <{}>, y_pred_prob, <{}>\r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y_pred_prob])))
+                    try:
+                        f.write("year, {}, months, <{}>, gender, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in gender])))
+                        f.write("year, {}, months, <{}>, ethnicity, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in ethnicity])))
+                        f.write("year, {}, months, <{}>, subject, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in subject_id])))
+                    except:
+                        pass
+
+                    f.write("year, {}, months, <{}>, best_params, <{}> \r\n".format(str(year), ",".join([str(i) for i in test_months]), best_params))
+
+
+        print("Finished {}".format(dump_filename))
+
+    return
+
+
+
 def get_measures(y, y_pred_prob, pred, modeltype):
     try:
         AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-    except:
+    except Exception as err:
+        print("couldn't compute AUC: {}".format(err))
         AUC=np.nan
     try:
         APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-    except:
+    except Exception as err:
+        print("couldn't compute APR: {}".format(err))
         APR=np.nan
     try:
         F1=sklearn.metrics.f1_score(y, pred)
         ACC=sklearn.metrics.accuracy_score(y, pred)
-    except:
+    except Exception as err:
+        print("couldn't compute F1, ACC: {}".format(err))
         F1=ACC=np.nan
     try:
-        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
             ## min-max scaling of y_pred
             p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        else:
+            p=y_pred_prob
         _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
     except Exception as err:
         print("couldn't compute ECE,MCE: {}".format(err))
         ECE = MCE = np.nan
     try:
-        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'rbf-svm']):
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
             ## min-max scaling of y_pred
             p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        else:
+            p=y_pred_prob
         O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
-    except:
+    except Exception as err:
+        print("couldn't compute O_E: {}".format(err))
         O_E = np.nan
     return AUC, F1, ACC, APR, ECE, MCE, O_E
 
@@ -2657,7 +2790,7 @@ def get_prediction(modeltype, model, X_df, y, subject_id):
         pred=model.predict(X_df)
     elif modeltype in ['rbf-svm']:
         y_pred_prob=model.predict_proba(X_df)[:,1]
-        pred=[1 if x >= 0.5 else 0 for x in y_pred_prob]
+        pred=[1 if x > 0.5 else 0 for x in y_pred_prob]
     elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
         ## one-class classifier
         y_pred_prob= -1.0 * model.decision_function(X_df)
@@ -2694,7 +2827,7 @@ if __name__=="__main__":
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
     parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
-    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type'], 6 training paradigms")
+    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site'], 6 training paradigms")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
@@ -2705,7 +2838,7 @@ if __name__=="__main__":
     parser.add_argument('--train_icu_types', type=str, nargs='+', default=["CTICU"], help="choices: lsit of e.g. [CTICU, MICU]")
     parser.add_argument('--test_icu_types', type=str, nargs='+', default=["CTICU", "MICU"], help="choices: None or list of e.g. [CTICU, MICU]")
     parser.add_argument('--load_filtered_data', type=int, default=0, help="loads stored data that includes features and outcomes, and common_indices. 0: False, 1: True")
-
+    parser.add_argument('--site_name', type=str, default=None, choices=[None, 'UPMCPUH', 'UPMCSHY', 'CTICU', 'MICU'], help="required if train_type=single_site")
 
 
     args = parser.parse_args()
@@ -2738,6 +2871,9 @@ if __name__=="__main__":
 
     if isinstance(args.gpu, int):
         args.gpu=[args.gpu]
+
+    if 'single_site' in args.train_types:
+        assert args.site_name is not None, "site_name is required for train_type='single_site'"
 
     n_threads=args.n_threads
 
@@ -2823,6 +2959,11 @@ if __name__=="__main__":
                         level=args.level, representation=args.representation, target=target, 
                         prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
                         train_icu_types=args.train_icu_types, test_icu_types=args.test_icu_types, test_size=0.2, output_dir=args.output_dir)
+
+                elif train_type=='single_site':
+                    main_single_site(site_name=args.site_name, random_seed=seed, max_time=args.max_time, 
+                        level=args.level, representation=args.representation, target=target, prefix=args.prefix, model_types=args.model_types, 
+                        data_dir=args.data_dir, training_years=[2008, 2009, 2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
 
 
     t1=time.time()
