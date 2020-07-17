@@ -2368,7 +2368,7 @@ def main_no_years(random_seed=None, max_time=24, test_size=0.2, level='itemid', 
     return
 
 def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representation='raw', test_size=0.2,
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[]):
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[], save_data=False):
     """
     This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
@@ -2394,13 +2394,17 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     # print("Loading the data.")
     # load_data(max_time=max_time, data_dir=data_dir)
 
+    if save_data:
+        data_out=os.path.join(output_dir, prefix + "hospital-style_trainHospitals_{}_{}_Simple_seed_{}_target={}.h5".format(
+                "-".join(train_hospitals), representation, str(random_seed), str(target)))
+
      # hours for windowing
     idx = pd.IndexSlice
     filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
                                               (filtered_df.index.get_level_values('hours_in') <= max_time)]
 
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     source_index=sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
 
@@ -2419,6 +2423,10 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
             filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
             target, representation, is_time_series, impute=not(modeltype=='grud'))
 
+        if save_data:
+            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals))
+            pd.Series(y).to_hdf(data_out, key='y_train' + "-".join(train_hospitals), mode='a')
+            
         print(X_df.shape)
 
         print("Finding the best %s model using a random search" % modeltype.upper())
@@ -2456,6 +2464,10 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
                     filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
                     representation, is_time_series, impute=not(modeltype=='grud'),
                     timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                        
+                if save_data:
+                    X_df.to_hdf(data_out, key="X_test_" + hospital, mode='a')
+                    pd.Series(y).to_hdf(data_out, key='y_test' + hospital, mode='a')
 
                 y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
@@ -2483,6 +2495,178 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
 
         print("Finished {}".format(dump_filename))
 
+    return
+
+def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', representation='raw', test_month_interval=2, training_years=[2010],
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[], save_data=False):
+    """
+    This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
+
+    """
+    global filtered_df
+    global label_df
+    global sites_df
+    global scaler
+    global train_means
+
+
+    def _train_test_util(models, is_time_series, impute):
+        '''
+        purpose: to share processed data between models and save computation time
+        should be called separately for standard models and time_series models
+        '''
+        if save_data:
+            data_type="time_series" if is_time_series else "flat"
+            data_out=os.path.join(data_dir, prefix + "hospital-overtime-style_{}_{}_data_{}_{}_Simple_seed_{}_target={}.h5".format(
+                    "-".join(train_hospitals),  "-".join([str(i) for i in training_years]), data_type, representation, str(random_seed), str(target)))
+
+        print("data preprocessing")
+
+        X_df, y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
+            filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
+            target, representation, is_time_series, impute=impute)
+
+        if save_data:
+            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals) + "_" + "-".join([str(i) for i in training_years]))
+            pd.Series(y).to_hdf(data_out, key='y_train' + "-".join(train_hospitals) + "_" + "-".join([str(i) for i in training_years]), mode='a')
+
+
+        print(X_df.shape)
+
+        model_dict={}
+        for modeltype in models:
+            print("Finding the best %s model using a random search" % modeltype.upper())
+            model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+            model_dict[modeltype]=model
+            # Record what the best performing model was
+            model_filename=os.path.join(output_dir, 
+                                        prefix + "bestmodel_hospital-overtime_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
+                                            "-".join(train_hospitals), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target))
+                                        )
+            print(model_filename)
+            with open(model_filename, 'wb') as f:
+                pickle.dump(model, f)
+
+        dump_filename=os.path.join(output_dir, 
+                                    prefix + "result_hospital-overtime-style_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
+                                        "-".join(train_hospitals), "-".join([str(i) for i in training_years]), "-".join([m.upper() for m in models]), representation, level, str(random_seed), str(target))
+                                    )
+        with open(dump_filename, 'w') as f:
+            for hospital in tqdm(sorted(test_hospitals)):
+                print('test hospital: {}'.format(hospital))
+                site_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
+                print('site_index size: {}'.format(str(len(site_index))))
+
+                for year in tqdm(sorted(test_years)):
+                    print('year:', str(year))
+                    for month in range(1, 13, test_month_interval):
+                        test_months=np.arange(month, month+test_month_interval, 1)
+                        print('months: ', [str(m) for m in test_months])
+                        # test on years 2011 onwards, every 2 months
+                        date_index=years_df[(years_df['year'].isin([year])) &
+                                            (years_df['month'].isin(test_months))].index.tolist()
+    
+                        print('date_index size: {}'.format(str(len(date_index))))
+                        test_index=set(site_index).intersection(date_index)
+                        print('test_index size: {}'.format(str(len(test_index))))
+
+                        if (len(test_index)<50):
+                            print("test size is too small: skipping this iteration ...")
+                            continue
+
+                        # get the X and y data for testing
+                        X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                            filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                            representation, is_time_series, impute=impute,
+                            timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+
+                        if save_data:
+                            X_df.to_hdf(data_out, key="X_test_" + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
+                            pd.Series(y).to_hdf(data_out, key='y_test' + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
+
+                        for modeltype in models:
+                            model=model_dict[modeltype]
+                            y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
+
+                            AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
+
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, AUC, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(AUC)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, F1, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(F1)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, Acc, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(ACC)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, APR, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(APR)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, ECE, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(ECE)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, MCE, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(MCE)))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, O_E, {} \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), str(O_E)))
+
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, label, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y])))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, pred, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in pred])))
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, y_pred_prob, <{}>\r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in y_pred_prob])))
+                            try:
+                                f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, gender, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in gender])))
+                                f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, ethnicity, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in ethnicity])))
+                                f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, subject, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), ",".join([str(i) for i in subject_id])))
+                            except:
+                                pass
+
+                            f.write("modeltype, {}, hospital, {}, year, {}, months, <{}>, best_params, <{}> \r\n".format(modeltype.upper(), str(hospital), str(year), ",".join([str(i) for i in test_months]), best_params))
+
+                print("Finished {}".format(dump_filename))
+
+    
+    np.random.seed(random_seed)
+
+
+
+
+    # (Amin) not using torch yet
+    # torch.manual_seed(random_seed)
+
+
+
+
+
+    # print("Loading the data.")
+    # load_data(max_time=max_time, data_dir=data_dir)
+
+     # hours for windowing
+    idx = pd.IndexSlice
+    filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
+                                              (filtered_df.index.get_level_values('hours_in') <= max_time)]
+
+    #drop hours in row
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+
+    year_index=years_df[years_df['year'].isin(training_years)].index.tolist()
+    site_index=sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
+    train_index=set(year_index).intersection(site_index)
+
+    years_set=set(years_df['year'].values.tolist())
+    ## exclude any year that is smaller than training_years
+    test_years=set([yr for yr in years_set if (yr > np.array(training_years)).all()])
+
+    if (test_hospitals is None or len(test_hospitals) == 0):
+        test_hospitals=set(sites_df['hospital'].values.tolist())
+
+    ## train_test standard models
+    std_models = [m for m in model_types if m not in ['lstm', 'gru', 'grud']]
+    if len(std_models)!=0:
+        is_time_series = False
+        impute=True
+        _train_test_util(std_models, is_time_series, impute)
+
+    ## train_test timeseries models
+    timeseries_models = [m for m in model_types if m in ['lstm', 'gru']]
+    if len(timeseries_models)!=0:
+        is_time_series = True
+        impute=True
+        _train_test_util(timeseries_models, is_time_series, impute)
+    
+    ## train_test GRUD model
+    if 'grud' in model_types:
+        is_time_series = True
+        impute=False
+        _train_test_util(['grud'], is_time_series, impute)
+ 
     return
 
 
@@ -2827,7 +3011,7 @@ if __name__=="__main__":
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
     parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
-    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site'], 6 training paradigms")
+    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site', hospital_overtime]")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
@@ -2839,6 +3023,8 @@ if __name__=="__main__":
     parser.add_argument('--test_icu_types', type=str, nargs='+', default=["CTICU", "MICU"], help="choices: None or list of e.g. [CTICU, MICU]")
     parser.add_argument('--load_filtered_data', type=int, default=0, help="loads stored data that includes features and outcomes, and common_indices. 0: False, 1: True")
     parser.add_argument('--site_name', type=str, default=None, choices=[None, 'UPMCPUH', 'UPMCSHY', 'CTICU', 'MICU'], help="required if train_type=single_site")
+    parser.add_argument('--save_data', type=int, default=0, help="saves the processed data to output_dir. 0: False, 1: True")
+
 
 
     args = parser.parse_args()
@@ -2952,7 +3138,7 @@ if __name__=="__main__":
                     main_hospital_wise(random_seed=seed, max_time=args.max_time, 
                         level=args.level, representation=args.representation, target=target, 
                         prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
-                        train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, test_size=0.2, output_dir=args.output_dir)
+                        train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, test_size=0.2, output_dir=args.output_dir, save_data=args.save_data)
 
                 elif train_type=='icu_type':
                     main_icu_type(random_seed=seed, max_time=args.max_time, 
@@ -2964,6 +3150,11 @@ if __name__=="__main__":
                     main_single_site(site_name=args.site_name, random_seed=seed, max_time=args.max_time, 
                         level=args.level, representation=args.representation, target=target, prefix=args.prefix, model_types=args.model_types, 
                         data_dir=args.data_dir, training_years=[2008, 2009, 2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
+                elif train_type=='hospital_overtime':
+                    main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=args.representation,
+                     test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
+                     model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
+                     test_hospitals=args.test_hospitals, save_data=args.save_data)
 
 
     t1=time.time()
