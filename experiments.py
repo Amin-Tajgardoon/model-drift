@@ -330,25 +330,27 @@ def impute_simple(df, time_index=None):
     """
 
     #masked data
-    masked_df=pd.isna(df)
-    masked_df=masked_df.apply(pd.to_numeric)
+    masked_df=pd.isna(df.drop(columns=['count', 'std'], level=1))
+    masked_df=masked_df.astype(int)
+    masked_df.rename({'mean': 'is_nan'}, axis=1, level=1, inplace=True)
 
     #time since last measurement
     if not(time_index):
         time_index='hours_in' #.encode()
     index_of_hours=list(df.index.names).index(time_index)
     time_in=[item[index_of_hours] for item in df.index.tolist()]
-    time_df=df.copy()
+    time_df=df.drop(columns=['mean', 'std'], level=1)
     for col in time_df.columns.tolist():
         time_df[col]=time_in
-    time_df[masked_df]=np.nan
+    # time_df[masked_df]=np.nan
+    time_df.rename({'count': 'time'}, axis=1, level=1, inplace=True)
 
     #concatenate the dataframes
-    df_prime=pd.concat([df,masked_df, time_df],axis=1,keys=['measurement','mask', 'time'])
+    df_prime=pd.concat([df, masked_df, time_df], axis=1)
     df_prime.columns=df_prime.columns.rename("simple_impute", level=0)#rename the column level
 
     #fill each dataframe using either ffill or mean
-    df_prime=df_prime.fillna(method='ffill').unstack().fillna(0)
+    df_prime=df_prime.unstack().fillna(0)
 
     #swap the levels so that the simple imputation feature is the lowesst value
     col_level_names=list(df_prime.columns.names)
@@ -553,7 +555,8 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
         col_level=list(df_in.columns.names).index('itemid'.encode()) # get the index of the column level desired
     else:
         col_level=list(df_in.columns.names).index(level) # get the index of the column level desired
-    test_df=df_in.mean(axis=1, level=col_level).copy() # average across that column level
+    # test_df=df_in.mean(axis=1, level=col_level).copy() # average across that column level
+    test_df=df_in.copy()
 
     del df_in
 
@@ -2527,8 +2530,8 @@ def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', repres
             target, representation, is_time_series, impute=impute)
 
         if save_data:
-            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals) + "_" + "-".join([str(i) for i in training_years]))
-            pd.Series(y).to_hdf(data_out, key='y_train' + "-".join(train_hospitals) + "_" + "-".join([str(i) for i in training_years]), mode='a')
+            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals))
+            pd.Series(y).to_hdf(data_out, key='y_train_' + "-".join(train_hospitals), mode='a')
 
 
         print(X_df.shape)
@@ -2582,7 +2585,7 @@ def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', repres
 
                         if save_data:
                             X_df.to_hdf(data_out, key="X_test_" + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
-                            pd.Series(y).to_hdf(data_out, key='y_test' + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
+                            pd.Series(y).to_hdf(data_out, key='y_test_' + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
 
                         for modeltype in models:
                             model=model_dict[modeltype]
