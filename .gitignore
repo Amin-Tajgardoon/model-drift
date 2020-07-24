@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # other
-util/test.bat
-notebooks/drift_detection.ipynb
+.vscode/*
+util/scripts/test.bat
