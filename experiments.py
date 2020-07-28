@@ -26,7 +26,9 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, LassoCV, LogisticRegressionCV
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
 from sklearn.naive_bayes import GaussianNB
-from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold, train_test_split
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold, train_test_split, StratifiedKFold
+from sklearn.feature_selection import SelectPercentile, SelectKBest, f_classif, RFECV
+from sklearn.pipeline import Pipeline
 import sklearn.metrics
 import sklearn.model_selection
 from sklearn.preprocessing import StandardScaler
@@ -1375,7 +1377,8 @@ def create_rnn(seqlen, n_features, hidden_layer_size, optimizer, activation, dro
 # In[11]:
 
 
-def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', random_state=1):
+def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', random_state=1, feature_selection=False,
+                        **feature_selection_args):
     """
     Select the best model for the data using CV
     Inputs:
@@ -1793,16 +1796,57 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         # try:
         #     trained_model=model.set_params(**best_params).fit(X,y)
         # except:
-        random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
-                                            scoring=scoring, random_state=random_state, n_jobs = n_threads, 
-                                            error_score = 0.0, **randomSearchCVargs)
-        random_search.fit(X, y)
-        best_params=random_search.best_params_
-        trained_model=random_search.best_estimator_
-        print(random_search.best_params_)
+        if feature_selection:
+            # if modeltype in ['rf', 'lr', 'rbf-svm']:
+                # rfecv = RFECV(estimator=model, cv=3, scoring=scoring, verbose=1, n_jobs=n_threads, **RFECVargs)
+            kfold=StratifiedKFold(n_splits=randomSearchCVargs['cv'], random_state=random_state)
+            select_k = SelectKBest(f_classif)
+            estimators = [('select_k', select_k), ('estimator', model)]
+            random_grid={'estimator__'+key:value for key,value in random_grid.items()}
+            random_grid.update({'select_k__k':feature_selection_args['K']})
+            pipe = Pipeline(estimators)
+
+            random_search = RandomizedSearchCV(estimator=pipe, param_distributions=random_grid, verbose=1, 
+                                                scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+                                                error_score = 0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
+            random_search.fit(X, y)
+            best_params=random_search.best_params_
+            # best_params={key.split('estimator__')[1]:value for key,value in best_params.items()}
+            trained_model=random_search.best_estimator_['estimator']
+            selected_features_mask=random_search.best_estimator_['select_k'].get_support()
+            
+            # elif modeltype in ['nb']:
+            #     ## for models that cannot be used with RFECV feature-selection
+            #     clf=RandomForestClassifier(n_estimators=100, random_state=random_state) 
+            #     rfecv = RFECV(estimator=clf, cv=3, scoring=scoring, verbose=1, n_jobs=n_threads, **RFECVargs)
+            #     random_search = RandomizedSearchCV(estimator=model, param_distributions=random_grid, verbose=1, 
+            #                                 scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+            #                                 error_score = 0.0, **randomSearchCVargs)
+            #     pipeline  = Pipeline([('feature_selection', rfecv), ('random_search', random_search)])
+            #     pipeline.fit(X, y)
+            #     best_params=pipeline['random_search'].best_params_
+            #     trained_model=pipeline['random_search'].best_estimator_
+            #     selected_features_mask=pipeline['feature_selection'].support_
+
+            # else:
+            #     raise('feature selection not implemented for model_type= {}'.format(modeltype))
+            
+            
+            print(best_params)
+            print('num. selected features= {}'.format(str(sum(selected_features_mask))))
+            return trained_model, selected_features_mask
 
 
-        return trained_model
+        else:
+            random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
+                                                scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+                                                error_score = 0.0, **randomSearchCVargs)
+            random_search.fit(X, y)
+            best_params=random_search.best_params_
+            trained_model=random_search.best_estimator_
+            print(random_search.best_params_)
+
+            return trained_model
 
 
 # In[12]:
@@ -2501,7 +2545,8 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     return
 
 def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', representation='raw', test_month_interval=2, training_years=[2010],
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[], save_data=False):
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[], save_data=False,
+         feature_selection=False, **feature_selection_args):
     """
     This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
@@ -2520,75 +2565,83 @@ def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', repres
         '''
         if save_data:
             data_type="time_series" if is_time_series else "flat"
-            data_out=os.path.join(data_dir, prefix + "hospital-overtime-style_{}_{}_data_{}_{}_Simple_seed_{}_target={}.h5".format(
+            data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "hospital-overtime-style_{}_{}_data_{}_{}_Simple_seed_{}_target={}.h5".format(
                     "-".join(train_hospitals),  "-".join([str(i) for i in training_years]), data_type, representation, str(random_seed), str(target)))
 
         print("data preprocessing")
 
-        X_df, y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
+        train_X_df, train_y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
             filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
             target, representation, is_time_series, impute=impute)
 
-        if save_data:
-            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals))
-            pd.Series(y).to_hdf(data_out, key='y_train_' + "-".join(train_hospitals), mode='a')
+        print(train_X_df.shape)
 
-
-        print(X_df.shape)
-
-        model_dict={}
-        for modeltype in models:
-            print("Finding the best %s model using a random search" % modeltype.upper())
-            model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
-            model_dict[modeltype]=model
-            # Record what the best performing model was
-            model_filename=os.path.join(output_dir, 
-                                        prefix + "bestmodel_hospital-overtime_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
-                                            "-".join(train_hospitals), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target))
-                                        )
-            print(model_filename)
-            with open(model_filename, 'wb') as f:
-                pickle.dump(model, f)
 
         dump_filename=os.path.join(output_dir, 
                                     prefix + "result_hospital-overtime-style_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
                                         "-".join(train_hospitals), "-".join([str(i) for i in training_years]), "-".join([m.upper() for m in models]), representation, level, str(random_seed), str(target))
                                     )
-        with open(dump_filename, 'w') as f:
-            for hospital in tqdm(sorted(test_hospitals)):
-                print('test hospital: {}'.format(hospital))
-                site_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
-                print('site_index size: {}'.format(str(len(site_index))))
+        with open(dump_filename, 'a') as f:        
+            for modeltype in models:
+                print("Finding the best %s model using a random search" % modeltype.upper())
+                model, selected_features_mask = classifier_select(train_X_df, np.asarray(train_y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                                                                    feature_selection=feature_selection, **feature_selection_args)
+                # Record what the best performing model was
+                model_filename=os.path.join(output_dir, 
+                                            prefix + "bestmodel_hospital-overtime_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
+                                                "-".join(train_hospitals), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target))
+                                            )
+                print(model_filename)
+                with open(model_filename, 'wb') as model_file:
+                    pickle.dump(model, model_file)
+                
+                if feature_selection:
+                    X_df=train_X_df.loc[:, selected_features_mask].copy()
+                else:
+                    X_df=train_X_df.copy()
 
-                for year in tqdm(sorted(test_years)):
-                    print('year:', str(year))
-                    for month in range(1, 13, test_month_interval):
-                        test_months=np.arange(month, month+test_month_interval, 1)
-                        print('months: ', [str(m) for m in test_months])
-                        # test on years 2011 onwards, every 2 months
-                        date_index=years_df[(years_df['year'].isin([year])) &
-                                            (years_df['month'].isin(test_months))].index.tolist()
-    
-                        print('date_index size: {}'.format(str(len(date_index))))
-                        test_index=set(site_index).intersection(date_index)
-                        print('test_index size: {}'.format(str(len(test_index))))
+                if save_data:
+                    key_suffix="-".join(train_hospitals)+"_"+modeltype.upper()
+                    X_df.to_hdf(data_out, key="X_train_" + key_suffix, mode='a')
+                    pd.Series(train_y).to_hdf(data_out, key='y_train_' + key_suffix, mode='a')
 
-                        if (len(test_index)<50):
-                            print("test size is too small: skipping this iteration ...")
-                            continue
+                for hospital in tqdm(sorted(test_hospitals)):
+                    print('test hospital: {}'.format(hospital))
+                    site_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
+                    print('site_index size: {}'.format(str(len(site_index))))
 
-                        # get the X and y data for testing
-                        X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
-                            filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
-                            representation, is_time_series, impute=impute,
-                            timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                    for year in tqdm(sorted(test_years)):
+                        print('year:', str(year))
+                        for month in range(1, 13, test_month_interval):
+                            test_months=np.arange(month, month+test_month_interval, 1)
+                            print('months: ', [str(m) for m in test_months])
+                            # test on years 2011 onwards, every 2 months
+                            date_index=years_df[(years_df['year'].isin([year])) &
+                                                (years_df['month'].isin(test_months))].index.tolist()
+        
+                            print('date_index size: {}'.format(str(len(date_index))))
+                            test_index=set(site_index).intersection(date_index)
+                            print('test_index size: {}'.format(str(len(test_index))))
 
-                        if save_data:
-                            X_df.to_hdf(data_out, key="X_test_" + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
-                            pd.Series(y).to_hdf(data_out, key='y_test_' + hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months]), mode='a')
+                            if (len(test_index)<50):
+                                print("test size is too small: skipping this iteration ...")
+                                continue
 
-                        for modeltype in models:
-                            model=model_dict[modeltype]
+                            # get the X and y data for testing
+                            X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                                filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                                representation, is_time_series, impute=impute,
+                                timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                            
+                            if feature_selection:
+                                X_df=X_df.loc[:, selected_features_mask]
+
+                            if save_data:
+                                key_suffix= hospital + "_" + str(year) + "_" + "-".join([str(i) for i in test_months])+"_" + modeltype.upper()
+                                X_df.to_hdf(data_out, key="X_test_" + key_suffix, mode='a')
+                                pd.Series(y).to_hdf(data_out, key='y_test_' + key_suffix, mode='a')
+
+                            
                             y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
                             AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
@@ -3027,7 +3080,8 @@ if __name__=="__main__":
     parser.add_argument('--load_filtered_data', type=int, default=0, help="loads stored data that includes features and outcomes, and common_indices. 0: False, 1: True")
     parser.add_argument('--site_name', type=str, default=None, choices=[None, 'UPMCPUH', 'UPMCSHY', 'CTICU', 'MICU'], help="required if train_type=single_site")
     parser.add_argument('--save_data', type=int, default=0, help="saves the processed data to output_dir. 0: False, 1: True")
-
+    parser.add_argument('--feature_selection', type=int, default=0, help="run RFE feature selection. 0: False, 1: True")
+    parser.add_argument('--K', type=int, nargs='+', default=None, help="number of features to select (list of int)")
 
 
     args = parser.parse_args()
@@ -3063,6 +3117,12 @@ if __name__=="__main__":
 
     if 'single_site' in args.train_types:
         assert args.site_name is not None, "site_name is required for train_type='single_site'"
+
+    feature_selection_args=None
+    if args.feature_selection:
+        if isinstance(args.K, int):
+            args.K=[args.K]
+        feature_selection_args={'K': args.K}
 
     n_threads=args.n_threads
 
@@ -3157,7 +3217,7 @@ if __name__=="__main__":
                     main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=args.representation,
                      test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
                      model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
-                     test_hospitals=args.test_hospitals, save_data=args.save_data)
+                     test_hospitals=args.test_hospitals, save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
 
 
     t1=time.time()
