@@ -3,16 +3,17 @@ import pandas as pd
 
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.utils import resample
-from utils import get_calibration_metrics, stat_ci, stat_pval
+from util.utils import get_calibration_metrics, stat_ci, stat_pval
 
 import argparse
 import os
+import time
 
-def bootstrap_predictions(n_bootstrap, out_file):
+def bootstrap_predictions(n_bootstrap, out_file, output_dir=""):
 
     text_files=[fname for fname in os.listdir(dir_path) if fname.startswith('result_') and fname.endswith(".txt")]
 
-    with open(os.path.join(dir_path, out_file), "w") as out_file:
+    with open(os.path.join(output_dir, out_file), "w") as out_file:
         for target in targets:
             for representation in representations:
                 for text_file in sorted(text_files):
@@ -91,7 +92,10 @@ def bootstrap_predictions(n_bootstrap, out_file):
 
     return
 
-def bootstrap_preds_to_stats(bs_file, stats_file, stat_test="mannwhitneyu"):
+def bootstrap_preds_to_stats(bs_file, stats_file, stat_test="mannwhitneyu", output_dir=""):
+    '''
+    supported stat_tests are ["wicoxon", "mannwhitneyu"]
+    '''
     
     with open(os.path.join(dir_path, bs_file), "r") as f:
         all_lines=f.readlines()
@@ -136,8 +140,8 @@ def bootstrap_preds_to_stats(bs_file, stats_file, stat_test="mannwhitneyu"):
                         _, pval=stat_pval(values, base_values, test=stat_test)
                         # print(hosp,year,month,target, rep, modeltype, measure, mean_score, ci_lower, ci_upper, pval)
                         result_df.loc[(hosp,year,month), idx[target, modeltype, rep, measure, ['N','mean', 'CI_L','CI_U', 'pval']]]=(len(values), mean_score, ci_lower, ci_upper, pval)
-                result_df.to_csv(os.path.join(dir_path, stats_file))
-                result_df.to_pickle(os.path.join(dir_path, stats_file.split(".")[0]+'.pkl'))
+                result_df.to_csv(os.path.join(output_dir, stats_file))
+                result_df.to_pickle(os.path.join(output_dir, stats_file.split(".")[0]+'.pkl'))
     return
 
 def get_values_from_line(line):
@@ -159,6 +163,9 @@ if __name__ == "__main__":
     parser.add_argument('--n_bootstrap', type=int, default=100, help="num of bootstrap samples")
     parser.add_argument('--generate_stats', type=int, default=1, help="generate stats from bootstrap. 0: False, 1: True")
     parser.add_argument('--stat_test', type=str, default="mannwhitneyu", choices=["mannwhitneyu", "wilcoxon"], help="independent test to use to compare vector of metrics")
+    parser.add_argument('--dir_path', type=str, default="", help="full path to directory containing probability and label files and/or generated bootstraps")
+    parser.add_argument('--output_dir', type=str, default="", help="full path to output directory")
+
     args = parser.parse_args()
     
     targets = ['mort_icu', 'los_3']
@@ -172,20 +179,26 @@ if __name__ == "__main__":
     month_step = 2
     month_intervals = np.arange(month_step, 13, month_step)
 
-    dir_path="../../../output/HIDENIC_overtime_analysis/hospital_overtime/"
+    dir_path=args.dir_path
+    output_dir=args.output_dir
+    if output_dir=="":
+        output_dir=dir_path
+    
     bs_file="stratified_bootstrap_metrics.txt"
     stats_file="bootstrap_stats_" + args.stat_test + ".csv"
     
     idx=pd.IndexSlice
 
+    t0=time.time()
     if(args.run_bootstrap==1):
         print("running bootstrap ...")
-        bootstrap_predictions(n_bootstrap=args.n_bootstrap, out_file=bs_file)
+        bootstrap_predictions(n_bootstrap=args.n_bootstrap, out_file=bs_file, output_dir=output_dir)
     if(args.generate_stats==1):
         print("generating stats from bootstrap samples...")
-        bootstrap_preds_to_stats(bs_file=bs_file, stats_file=stats_file, stat_test=args.stat_test)
+        bootstrap_preds_to_stats(bs_file=bs_file, stats_file=stats_file, stat_test=args.stat_test, output_dir=output_dir)
     
-    print("Done!")
+    t1=time.time()
+    print("Done. in {} seconds".format(str(t1-t0)))
 
 
 
