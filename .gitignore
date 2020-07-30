@@ -131,4 +131,5 @@ dmypy.json
 # other
 .vscode/*
 util/scripts/test.bat
-notebooks/Untitled.ipynb
+notebooks/Untitled*
+notebooks/*.ipynb
