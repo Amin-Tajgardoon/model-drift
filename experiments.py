@@ -1803,7 +1803,9 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             select_k = SelectKBest(f_classif)
             estimators = [('select_k', select_k), ('estimator', model)]
             random_grid={'estimator__'+key:value for key,value in random_grid.items()}
-            random_grid.update({'select_k__k':feature_selection_args['K']})
+           num_features=feature_selection_args['K']
+            num_features=[i for i in num_features if i<=X.shape[1]]
+            random_grid.update({'select_k__k':num_features})
             pipe = Pipeline(estimators)
 
             random_search = RandomizedSearchCV(estimator=pipe, param_distributions=random_grid, verbose=1, 
@@ -1878,8 +1880,9 @@ def invert_dict(d):
 # In[24]:
 
 
-def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', representation='raw',
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2):
+def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='itemid', representation='raw',
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2,
+         save_data=False, feature_selection=False, **feature_selection_args):
     """
     This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
@@ -1901,6 +1904,9 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
 
 
 
+    if save_data:
+        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "overall-overtime-style_{}_{}_{}_Simple_seed_{}_target={}.h5".format(
+                            "-".join([str(i) for i in training_years]), "feature-selection" if feature_selection else "", representation, str(random_seed), str(target)))
 
     # print("Loading the data.")
     # load_data(max_time=max_time, data_dir=data_dir)
@@ -1911,7 +1917,7 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
                                               (filtered_df.index.get_level_values('hours_in') <= max_time)]
 
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     # print("Loading the  years.")
     # read_years_data()
@@ -1938,20 +1944,33 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
 
         print("Finding the best %s model using a random search" % modeltype.upper())
 
-        model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+        model, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                                feature_selection=feature_selection, **feature_selection_args)
 
         # Record what the best performing model was
-        model_filename=os.path.join(output_dir, prefix+"bestmodel-first-years-style_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.pkl".format(modeltype.upper(), representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
+        model_filename=os.path.join(output_dir, prefix+"bestmodel-overall-overtime-style_{}_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.pkl".format(
+            modeltype.upper(), "feature-selection" if feature_selection else "", representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
         print(model_filename)
         with open(model_filename, 'wb') as f:
             pickle.dump(model, f)
+        
+        if feature_selection:
+            X_df=X_df.loc[:, selected_features_mask]
+
+        if save_data:
+            key_suffix="-".join([str(i) for i in training_years])
+            if feature_selection:
+                key_suffix=key_suffix + "_" + modeltype.upper()
+          
+            X_df.to_hdf(data_out, key="X_train_" + key_suffix, mode='a')
+            pd.Series(y).to_hdf(data_out, key='y_train_' + key_suffix, mode='a')
 
         years_set=set(years_df['year'].values.tolist())
         ## exclude any year that is smaller than training_years
-        test_years=set([yr for yr in years_set if (yr > np.array(training_years)).any()])
+        test_years=set([yr for yr in years_set if (yr > np.array(training_years)).all()])
 
-        dump_filename=os.path.join(output_dir, prefix+"result_first-years-style_{}_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.txt".format(
-            "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
+        dump_filename=os.path.join(output_dir, prefix+"result_overall-overtime-style_{}_{}_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.txt".format(
+            "-".join([str(i) for i in training_years]), modeltype.upper(), "feature-selection" if feature_selection else "", representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
         with open(dump_filename, 'w') as f:
             for year in tqdm(sorted(test_years)):
                 for month in range(1, 13, test_month_interval):
@@ -1968,6 +1987,17 @@ def main(random_seed=None, max_time=24, test_size=0.2, level='itemid', represent
                         filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
                         representation, is_time_series, impute=not(modeltype=='grud'),
                         timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+
+                    if feature_selection:
+                        X_df=X_df.loc[:, selected_features_mask]
+
+                    if save_data:
+                        key_suffix=str(year) + "_" + "-".join([str(i) for i in test_months])
+                        if feature_selection:
+                            key_suffix=key_suffix + "_" + modeltype.upper()
+                    
+                        X_df.to_hdf(data_out, key="X_test_" + key_suffix, mode='a')
+                        pd.Series(y).to_hdf(data_out, key='y_test_' + key_suffix, mode='a')
 
                     y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
@@ -3063,11 +3093,11 @@ if __name__=="__main__":
     parser.add_argument('--max_time', type=int, default=24)
     parser.add_argument('--random_seed', type=int, nargs='+', default=None)
     parser.add_argument('--level', type=str, default='itemid', choices=['itemid', 'Level2', 'nlp'])
-    parser.add_argument('--representation', type=str, default='raw', choices=['raw', 'pca', 'umap', 'autoencoder', 'nlp'])
+    parser.add_argument('--representation', type=str, nargs='+', default=['raw'], help="['raw', 'pca', 'umap', 'autoencoder', 'nlp']")
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
     parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
-    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['first_years', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site', hospital_overtime]")
+    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['overall_overtime', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site', hospital_overtime]")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
@@ -3080,16 +3110,17 @@ if __name__=="__main__":
     parser.add_argument('--load_filtered_data', type=int, default=0, help="loads stored data that includes features and outcomes, and common_indices. 0: False, 1: True")
     parser.add_argument('--site_name', type=str, default=None, choices=[None, 'UPMCPUH', 'UPMCSHY', 'CTICU', 'MICU'], help="required if train_type=single_site")
     parser.add_argument('--save_data', type=int, default=0, help="saves the processed data to output_dir. 0: False, 1: True")
-    parser.add_argument('--feature_selection', type=int, default=0, help="run RFE feature selection. 0: False, 1: True")
+    parser.add_argument('--feature_selection', type=int, default=0, help="run univariate feature selection. 0: False, 1: True")
     parser.add_argument('--K', type=int, nargs='+', default=None, help="number of features to select (list of int)")
-
+    parser.add_argument('--train_years', type=int, nargs='+', default=[2008,2009,2010], help="2008-2014")
 
     args = parser.parse_args()
     
     if isinstance(args.random_seed, int):
         args.random_seed=[args.random_seed]
 
-    print('random_seed', args.random_seed)
+    if isinstance(args.representation, str):
+        args.representation=[args.representation]
 
     if isinstance(args.model_types, str):
         args.model_types=[args.model_types]
@@ -3111,6 +3142,9 @@ if __name__=="__main__":
 
     if isinstance(args.test_icu_types, str):
         args.test_icu_types=[args.test_icu_types]
+
+    if isinstance(args.train_years, int):
+        args.train_years=[args.train_years]
 
     if isinstance(args.gpu, int):
         args.gpu=[args.gpu]
@@ -3175,49 +3209,54 @@ if __name__=="__main__":
             print("target= ", target)
             print("#"*100)
 
-            for seed in args.random_seed:
+            for representation in args.representation:
                 print("#"*100)
-                print("seed= ", seed)
+                print("representation= ", representation)
                 print("#"*100)
-                embedded_model=None
-                scaler=None
-                best_params=None
-                keep_cols=None
-                if train_type=='rolling_limited':
-                    main_rolling_limited(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=args.representation,
-                     target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
-                elif train_type=='rolling':
-                    main_rolling(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=args.representation, 
-                                target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
-                elif train_type=='no_years':
-                    main_no_years(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=args.representation,
-                     target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
-                elif train_type=='first_years':
-                    main(random_seed=seed, max_time=args.max_time, test_size=args.test_size, 
-                        level=args.level, representation=args.representation, target=target, 
-                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, training_years=[2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
+                for seed in args.random_seed:
+                    print("#"*100)
+                    print("seed= ", seed)
+                    print("#"*100)
+                    embedded_model=None
+                    scaler=None
+                    best_params=None
+                    keep_cols=None
+                    if train_type=='rolling_limited':
+                        main_rolling_limited(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=representation,
+                        target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
+                    elif train_type=='rolling':
+                        main_rolling(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=representation, 
+                                    target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
+                    elif train_type=='no_years':
+                        main_no_years(random_seed=seed, max_time=args.max_time, test_size=args.test_size, level=args.level, representation=representation,
+                        target=target, prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, output_dir=args.output_dir)
+                    elif train_type=='overall_overtime':
+                        main_overtime_overall(random_seed=seed, max_time=args.max_time, test_size=args.test_size, 
+                            level=args.level, representation=representation, target=target, 
+                            prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, training_years=args.train_years, output_dir=args.output_dir, test_month_interval=args.test_month_interval,
+                            save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
 
-                elif train_type=='hospital_wise':
-                    main_hospital_wise(random_seed=seed, max_time=args.max_time, 
-                        level=args.level, representation=args.representation, target=target, 
-                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
-                        train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, test_size=0.2, output_dir=args.output_dir, save_data=args.save_data)
+                    elif train_type=='hospital_wise':
+                        main_hospital_wise(random_seed=seed, max_time=args.max_time, 
+                            level=args.level, representation=representation, target=target, 
+                            prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
+                            train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, test_size=0.2, output_dir=args.output_dir, save_data=args.save_data)
 
-                elif train_type=='icu_type':
-                    main_icu_type(random_seed=seed, max_time=args.max_time, 
-                        level=args.level, representation=args.representation, target=target, 
-                        prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
-                        train_icu_types=args.train_icu_types, test_icu_types=args.test_icu_types, test_size=0.2, output_dir=args.output_dir)
+                    elif train_type=='icu_type':
+                        main_icu_type(random_seed=seed, max_time=args.max_time, 
+                            level=args.level, representation=representation, target=target, 
+                            prefix=args.prefix, model_types=args.model_types, data_dir=args.data_dir, 
+                            train_icu_types=args.train_icu_types, test_icu_types=args.test_icu_types, test_size=0.2, output_dir=args.output_dir)
 
-                elif train_type=='single_site':
-                    main_single_site(site_name=args.site_name, random_seed=seed, max_time=args.max_time, 
-                        level=args.level, representation=args.representation, target=target, prefix=args.prefix, model_types=args.model_types, 
-                        data_dir=args.data_dir, training_years=[2008, 2009, 2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
-                elif train_type=='hospital_overtime':
-                    main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=args.representation,
-                     test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
-                     model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
-                     test_hospitals=args.test_hospitals, save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
+                    elif train_type=='single_site':
+                        main_single_site(site_name=args.site_name, random_seed=seed, max_time=args.max_time, 
+                            level=args.level, representation=representation, target=target, prefix=args.prefix, model_types=args.model_types, 
+                            data_dir=args.data_dir, training_years=[2008, 2009, 2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
+                    elif train_type=='hospital_overtime':
+                        main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=representation,
+                        test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
+                        model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
+                        test_hospitals=args.test_hospitals, save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
 
 
     t1=time.time()
