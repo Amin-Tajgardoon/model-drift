@@ -35,6 +35,8 @@ import sklearn.model_selection
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import label_binarize
 from scipy import stats
+from util.utils import get_calibration_metrics
+
 
 # #for GRU-D
 # import torch
@@ -84,8 +86,79 @@ train_means=None
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+def get_measures(y, y_pred_prob, pred, modeltype):
+    try:
+        AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
+    except Exception as err:
+        print("couldn't compute AUC: {}".format(err))
+        AUC=np.nan
+    try:
+        APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
+    except Exception as err:
+        print("couldn't compute APR: {}".format(err))
+        APR=np.nan
+    try:
+        F1=sklearn.metrics.f1_score(y, pred)
+        ACC=sklearn.metrics.accuracy_score(y, pred)
+    except Exception as err:
+        print("couldn't compute F1, ACC: {}".format(err))
+        F1=ACC=np.nan
+    try:
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
+            ## min-max scaling of y_pred
+            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        else:
+            p=y_pred_prob
+        _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
+    except Exception as err:
+        print("couldn't compute ECE,MCE: {}".format(err))
+        ECE = MCE = np.nan
+    try:
+        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
+            ## min-max scaling of y_pred
+            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
+        else:
+            p=y_pred_prob
+        O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
+    except Exception as err:
+        print("couldn't compute O_E: {}".format(err))
+        O_E = np.nan
+    return AUC, F1, ACC, APR, ECE, MCE, O_E
 
-def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
+def get_prediction(modeltype, model, X_df, y, subject_id):
+    # Different models have different score funcions
+    if modeltype in ['lstm','gru']:
+        y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
+        pred = list(map(int, y_pred_prob > 0.5))
+    elif modeltype=='grud':
+        #create test_dataloader X_df, y_df
+        test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
+
+        predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
+        y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
+        y=np.squeeze(np.asarray(labels))
+        pred=np.argmax(np.squeeze(predictions), axis=1)
+        # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
+    elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
+        y_pred_prob=model.predict_proba(X_df)[:,1]
+        pred=model.predict(X_df)
+    elif modeltype in ['svm']:
+        y_pred_prob=model.decision_function(X_df)
+        pred=model.predict(X_df)
+    elif modeltype in ['rbf-svm']:
+        y_pred_prob=model.predict_proba(X_df)[:,1]
+        pred=[1 if x > 0.5 else 0 for x in y_pred_prob]
+    elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
+        ## one-class classifier
+        y_pred_prob= -1.0 * model.decision_function(X_df)
+        pred= model.predict(X_df)
+        pred[pred==1] = 0
+        pred[pred==-1] = 1
+
+    else:
+        raise Exception('dont know proba function for classifier = "%s"' % modeltype)
+    return y, y_pred_prob, pred
+
 
     labels = np.unique(y_true)
     if len(labels) > 2:
@@ -1830,7 +1903,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
                                                 error_score = 0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
             random_search.fit(X, y)
             best_params=random_search.best_params_
-            train_cv_results=random_search.cv_results_['estimator']
+            train_cv_results=random_search.cv_results_
             # best_params={key.split('estimator__')[1]:value for key,value in best_params.items()}
             trained_model=random_search.best_estimator_['estimator']
             selected_features_mask=random_search.best_estimator_['select_k'].get_support()
@@ -1911,6 +1984,7 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
     global years_df
     global scaler
     global train_means
+    global train_cv_results
 
     np.random.seed(random_seed)
 
@@ -1994,7 +2068,6 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
 
             best_rank_index=train_cv_results['rank_test_AUC'] == 1
             for score in ['AUC', 'APR', 'ECE', 'MCE']:
-
                 f.write("train_cv_score, {}, {} \r\n".format(score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
 
             for year in tqdm(sorted(test_years)):
@@ -2053,11 +2126,6 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
 
     return
 
-
-# # def main_rolling
-
-# In[16]:
-
 def main_rolling(random_seed=None, max_time=24, test_size=0.2, level='itemid', representation='raw', target='mort_icu', prefix='', model_types=['rf'], data_dir="", output_dir=""):
     """
     This function trains data model on all previous data.
@@ -2084,7 +2152,7 @@ def main_rolling(random_seed=None, max_time=24, test_size=0.2, level='itemid', r
     filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
                                               (filtered_df.index.get_level_values('hours_in') <= max_time)]
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     # print("Loading the  years.")
     # read_years_data()
@@ -2214,7 +2282,7 @@ def main_rolling_limited(random_seed=None, max_time=24, test_size=0.2, level='it
     idx = pd.IndexSlice
     filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) & (filtered_df.index.get_level_values('hours_in') <= max_time)]
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     # print("Loading the  years.")
     # read_years_data()
@@ -2348,7 +2416,7 @@ def main_no_years(random_seed=None, max_time=24, test_size=0.2, level='itemid', 
     filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) & (filtered_df.index.get_level_values('hours_in') <= max_time)]
     #drop hours in row
     print(filtered_df.head(5))
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
 
     # print("data preprocessing")
@@ -2820,7 +2888,7 @@ def main_icu_type(random_seed=None, max_time=24, level='itemid', representation=
                                               (filtered_df.index.get_level_values('hours_in') <= max_time)]
 
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     source_index=sites_df[sites_df['icu_category'].isin(train_icu_types)].index.tolist()
 
@@ -2906,7 +2974,8 @@ def main_icu_type(random_seed=None, max_time=24, level='itemid', representation=
     return
 
 def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='itemid', representation='raw',
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2):
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", training_years=[2010], output_dir="", test_month_interval=2,
+         save_data=False, feature_selection=False, **feature_selection_args):
     """
     This function trains data on a single site from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
@@ -2917,6 +2986,8 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
     global scaler
     global train_means
     global sites_df
+    global train_cv_results
+
 
 
     np.random.seed(random_seed)
@@ -2925,6 +2996,10 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
     # (Amin) not using torch yet
     # torch.manual_seed(random_seed)
 
+
+    if save_data:
+        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "single-site-style_{}_{}_{}_{}_Simple_seed_{}_target={}.h5".format(
+                            site_name.upper(), "-".join([str(i) for i in training_years]), "feature-selection" if feature_selection else "", representation, str(random_seed), str(target)))
     # print("Loading the data.")
     # load_data(max_time=max_time, data_dir=data_dir)
 
@@ -2934,7 +3009,7 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
                                               (filtered_df.index.get_level_values('hours_in') <= max_time)]
 
     #drop hours in row
-    filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
     if site_name in sites_df['hospital'].tolist():
         site_index=sites_df[sites_df['hospital']==site_name].index.tolist()
@@ -2960,7 +3035,9 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
 
         print("Finding the best %s model using a random search" % modeltype.upper())
 
-        model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+        model, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                                feature_selection=feature_selection, **feature_selection_args)
+
 
         # Record what the best performing model was
         model_filename=os.path.join(output_dir, 
@@ -2970,6 +3047,17 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
         with open(model_filename, 'wb') as f:
             pickle.dump(model, f)
 
+        if feature_selection:
+            X_df=X_df.loc[:, selected_features_mask]
+
+        if save_data:
+            key_suffix="-".join([str(i) for i in training_years])
+            if feature_selection:
+                key_suffix=key_suffix + "_" + modeltype.upper()
+          
+            X_df.to_hdf(data_out, key="X_train_" + key_suffix, mode='a')
+            pd.Series(y).to_hdf(data_out, key='y_train_' + key_suffix, mode='a')
+
         years_set=set(years_df_filtered['year'].tolist())
         ## exclude any year that is smaller than training_years
         test_years=set([yr for yr in years_set if (yr > np.array(training_years)).all()])
@@ -2978,6 +3066,11 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
                                     prefix+"result_single-site-style_site_{}_train-years_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
                                         site_name.upper(), "-".join([str(i) for i in training_years]), modeltype.upper(), representation, level, str(random_seed), str(target)))
         with open(dump_filename, 'w') as f:
+
+            best_rank_index=train_cv_results['rank_test_AUC'] == 1
+            for score in ['AUC', 'APR', 'ECE', 'MCE']:
+                f.write("train_cv_score, {}, {} \r\n".format(score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+
             for year in tqdm(sorted(test_years)):
                 for month in range(1, 13, test_month_interval):
                     test_months=np.arange(month, month+test_month_interval, 1)
@@ -2996,10 +3089,18 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
 
                     print("test_df shape: ", X_df.shape)
 
+                    if feature_selection:
+                        X_df=X_df.loc[:, selected_features_mask]
+
+                    if save_data:
+                        key_suffix=str(year) + "_" + "-".join([str(i) for i in test_months])
+                        if feature_selection:
+                            key_suffix=key_suffix + "_" + modeltype.upper()
+                    
+                        X_df.to_hdf(data_out, key="X_test_" + key_suffix, mode='a')
+                        pd.Series(y).to_hdf(data_out, key='y_test_' + key_suffix, mode='a')
+
                     y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
-                    print("actual pos rate:", np.mean(y))
-                    print("pred prob avrg:", np.mean(y_pred_prob))
-                    print("pred pos rate at 0.5 cutoff:", np.mean(pred))
 
                     AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
 
@@ -3027,86 +3128,6 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
         print("Finished {}".format(dump_filename))
 
     return
-
-
-
-def get_measures(y, y_pred_prob, pred, modeltype):
-    try:
-        AUC=sklearn.metrics.roc_auc_score(y, y_pred_prob)
-    except Exception as err:
-        print("couldn't compute AUC: {}".format(err))
-        AUC=np.nan
-    try:
-        APR=sklearn.metrics.average_precision_score(y, y_pred_prob)
-    except Exception as err:
-        print("couldn't compute APR: {}".format(err))
-        APR=np.nan
-    try:
-        F1=sklearn.metrics.f1_score(y, pred)
-        ACC=sklearn.metrics.accuracy_score(y, pred)
-    except Exception as err:
-        print("couldn't compute F1, ACC: {}".format(err))
-        F1=ACC=np.nan
-    try:
-        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
-            ## min-max scaling of y_pred
-            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
-        else:
-            p=y_pred_prob
-        _,_,ECE,MCE = get_calibration_metrics(y, p, 10, 'quantile')
-    except Exception as err:
-        print("couldn't compute ECE,MCE: {}".format(err))
-        ECE = MCE = np.nan
-    try:
-        if (modeltype in ['1class_svm', '1class_svm_novel', 'iforest', 'svm']):
-            ## min-max scaling of y_pred
-            p = (y_pred_prob - np.min(y_pred_prob))/ (np.max(y_pred_prob) - np.min(y_pred_prob))
-        else:
-            p=y_pred_prob
-        O_E = np.mean(p)/np.mean(y) ## observed-mean over expected-mean
-    except Exception as err:
-        print("couldn't compute O_E: {}".format(err))
-        O_E = np.nan
-    return AUC, F1, ACC, APR, ECE, MCE, O_E
-
-def get_prediction(modeltype, model, X_df, y, subject_id):
-    # Different models have different score funcions
-    if modeltype in ['lstm','gru']:
-        y_pred_prob=model.predict(np.swapaxes(X_df, 1,2))
-        pred = list(map(int, y_pred_prob > 0.5))
-    elif modeltype=='grud':
-        #create test_dataloader X_df, y_df
-        test_dataloader=PrepareDataset(X_df, y, subject_id, train_means, BATCH_SIZE = 1, seq_len = 25, ethnicity_gender=True, shuffle=False)
-
-        predictions, labels, _, _ = predict_GRUD(model, test_dataloader)
-        y_pred_prob=np.squeeze(np.asarray(predictions))[:,1]
-        y=np.squeeze(np.asarray(labels))
-        pred=np.argmax(np.squeeze(predictions), axis=1)
-        # ethnicity, gender=np.squeeze(ethnicity), np.squeeze(gender)
-    elif modeltype in ['lr', 'rf', 'mlp', 'knn', 'nb']:
-        y_pred_prob=model.predict_proba(X_df)[:,1]
-        pred=model.predict(X_df)
-    elif modeltype in ['svm']:
-        y_pred_prob=model.decision_function(X_df)
-        pred=model.predict(X_df)
-    elif modeltype in ['rbf-svm']:
-        y_pred_prob=model.predict_proba(X_df)[:,1]
-        pred=[1 if x > 0.5 else 0 for x in y_pred_prob]
-    elif modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
-        ## one-class classifier
-        y_pred_prob= -1.0 * model.decision_function(X_df)
-        pred= model.predict(X_df)
-        pred[pred==1] = 0
-        pred[pred==-1] = 1
-
-    else:
-        raise Exception('dont know proba function for classifier = "%s"' % modeltype)
-    return y, y_pred_prob, pred
-
-
-# # Main
-
-# In[ ]:
 
 
 if __name__=="__main__":
@@ -3282,7 +3303,8 @@ if __name__=="__main__":
                     elif train_type=='single_site':
                         main_single_site(site_name=args.site_name, random_seed=seed, max_time=args.max_time, 
                             level=args.level, representation=representation, target=target, prefix=args.prefix, model_types=args.model_types, 
-                            data_dir=args.data_dir, training_years=[2008, 2009, 2010], output_dir=args.output_dir, test_month_interval=args.test_month_interval)
+                            data_dir=args.data_dir, training_years=args.train_years, output_dir=args.output_dir, test_month_interval=args.test_month_interval,
+                            save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
                     elif train_type=='hospital_overtime':
                         main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=representation,
                         test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 

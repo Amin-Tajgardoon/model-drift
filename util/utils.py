@@ -5,6 +5,7 @@ from scipy.stats import norm
 # from util.roc_comparison import compare_auc_delong_xu as delong
 from rpy2 import robjects as robj
 from rpy2.robjects.packages import importr
+import warnings
 
 def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
 
@@ -25,7 +26,16 @@ def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
         raise ValueError("Invalid entry to 'bin_strategy' input. bin_Strategy "
                          "must be either 'quantile' or 'uniform'.")
 
-    binids = np.digitize(y_prob, bins) - 1
+    bins=sorted(np.unique(bins))
+    if len(bins)<2:
+        warnings.warn("len(bins) is less than 2, calibration is not calculated.")
+        return np.nan, np.nan, np.nan, np.nan
+
+    try:
+        binids = np.digitize(y_prob, sorted(np.unique(bins))) - 1
+    except Exception as err:
+        warnings.warn(err)
+        return np.nan, np.nan, np.nan, np.nan
 
     bin_sums = np.bincount(binids, weights=y_prob, minlength=len(bins))
     bin_true = np.bincount(binids, weights=y_true, minlength=len(bins))
