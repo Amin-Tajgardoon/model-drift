@@ -12,7 +12,7 @@ def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
     if len(labels) > 2:
         raise ValueError("Only binary classification is supported. "
                          "Provided labels %s." % labels)
-    y_true = label_binarize(y_true, labels, classes=[0,1])[:, 0]
+    y_true = label_binarize(y_true, classes=labels)[:, 0]
 
     if bin_strategy == 'quantile':  ## equal-frequency bins 
         # Determine bin edges by distribution of data 

@@ -92,9 +92,9 @@ def main_bootstrap_hospOvertime(n_bootstrap, data_dir, out_filename, out_dir="")
 
     return
 
-def main_bootstrap_firstYears(n_bootstrap, data_dir, out_filename, out_dir=""):
+def main_bootstrap_overall_overtime(n_bootstrap, data_dir, out_filename, out_dir=""):
 
-    text_files=[fname for fname in os.listdir(data_dir) if fname.startswith('result_first-years-style') and fname.endswith(".txt")]
+    text_files=[fname for fname in os.listdir(data_dir) if fname.startswith('result_overall-overtime-style') and fname.endswith(".txt")]
 
     with open(os.path.join(out_dir, out_filename), "w") as out_file:
         for target in targets:
@@ -222,7 +222,7 @@ def main_stats_hospOvertime(data_dir, bs_filename, out_filename, stat_test="mann
                 result_df.to_pickle(os.path.join(out_dir, out_filename.split(".")[0]+'.pkl'))
     return
 
-def main_stats_firstYears(data_dir, bs_filename, out_filename, stat_test="mannwhitneyu", out_dir=""):
+def main_stats_overall_overtime(data_dir, bs_filename, out_filename, stat_test="mannwhitneyu", out_dir=""):
     '''
     supported stat_tests are ["wicoxon", "mannwhitneyu"]
     '''
@@ -293,7 +293,7 @@ if __name__ == "__main__":
     parser.add_argument('--stat_test', type=str, default="mannwhitneyu", choices=["mannwhitneyu", "wilcoxon"], help="independent test to use to compare vector of metrics")
     parser.add_argument('--data_dir', type=str, default="", help="full path to directory containing probability and label files and/or generated bootstraps")
     parser.add_argument('--out_dir', type=str, default="", help="full path to output directory")
-    parser.add_argument('--source_train_type', type=str, default=None, help="['first_years', 'hospital_wise', 'icu_type', 'single_site', 'hospital_overtime']")
+    parser.add_argument('--source_train_type', type=str, default=None, help="['overall_overtime', 'hospital_wise', 'icu_type', 'single_site', 'hospital_overtime']")
 
 
     args = parser.parse_args()
@@ -314,16 +314,16 @@ if __name__ == "__main__":
     if out_dir=="":
         out_dir=data_dir
     
-    bs_file="bootstrap_" + args.source_train_type + ".txt"
-    stats_file="bootstrap_stats_" + args.source_train_type + "_" + args.stat_test + ".csv"
+    bs_file="bootstrap_" + str(args.n_bootstrap) + "_" + args.source_train_type + ".txt"
+    stats_file="bootstrap_stats_" + str(args.n_bootstrap) + "_" + args.source_train_type + "_" + args.stat_test + ".csv"
     
     idx=pd.IndexSlice
 
     t0=time.time()
     if(args.run_bootstrap==1):
         print("running bootstrap ...")
-        if args.source_train_type=="first_years":
-            main_bootstrap_firstYears(n_bootstrap=args.n_bootstrap, data_dir=data_dir, out_filename=bs_file, out_dir=out_dir)
+        if args.source_train_type=="overall_overtime":
+            main_bootstrap_overall_overtime(n_bootstrap=args.n_bootstrap, data_dir=data_dir, out_filename=bs_file, out_dir=out_dir)
         elif args.source_train_type=="hospital_overtime":
             main_bootstrap_hospOvertime(n_bootstrap=args.n_bootstrap, data_dir=data_dir, out_filename=bs_file, out_dir=out_dir)
         else:
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     if(args.generate_stats==1):
         print("generating stats from bootstrap samples...")
         if args.source_train_type=="first_years":
-            main_stats_firstYears(data_dir=data_dir, bs_filename=bs_file, out_filename=stats_file, stat_test=args.stat_test, out_dir=out_dir)
+            main_stats_overall_overtime(data_dir=data_dir, bs_filename=bs_file, out_filename=stats_file, stat_test=args.stat_test, out_dir=out_dir)
         elif args.source_train_type=="hospital_overtime":
             main_stats_hospOvertime(data_dir=data_dir, bs_filename=bs_file, out_filename=stats_file, stat_test=args.stat_test, out_dir=out_dir)
     

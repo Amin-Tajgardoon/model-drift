@@ -30,6 +30,7 @@ from sklearn.model_selection import RandomizedSearchCV, GridSearchCV, GroupKFold
 from sklearn.feature_selection import SelectPercentile, SelectKBest, f_classif, RFECV
 from sklearn.pipeline import Pipeline
 import sklearn.metrics
+from sklearn.metrics import make_scorer, roc_auc_score, average_precision_score
 import sklearn.model_selection
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import label_binarize
@@ -76,6 +77,7 @@ embedded_model=None
 scaler=None
 
 best_params=None
+train_cv_results=None
 keep_cols=None
 train_means=None
 
@@ -89,7 +91,7 @@ def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
     if len(labels) > 2:
         raise ValueError("Only binary classification is supported. "
                          "Provided labels %s." % labels)
-    y_true = label_binarize(y_true, labels)[:, 0]
+    y_true = label_binarize(y_true, classes=labels)[:, 0]
 
     if bin_strategy == 'quantile':  ## equal-frequency bins 
         # Determine bin edges by distribution of data 
@@ -118,6 +120,14 @@ def get_calibration_metrics(y_true, y_prob, n_bins, bin_strategy='quantile'):
     max_error = np.max(abs_error)
 
     return prob_true, prob_pred, expected_error, max_error
+
+def get_ECE(y, y_pred, **kwargs):
+    _, _, ECE, _ = get_calibration_metrics(y_true=y, y_prob=y_pred, n_bins=10, bin_strategy='quantile')
+    return ECE
+
+def get_MCE(y, y_pred, **kwargs):
+    _, _, _, MCE = get_calibration_metrics(y_true=y, y_prob=y_pred, n_bins=10, bin_strategy='quantile')
+    return MCE
 
 def get_globals():
     """
@@ -1391,6 +1401,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         model : A model for testing the test data on.
     """
     global best_params
+    global train_cv_results
     global train_means
     global n_threads
 
@@ -1790,8 +1801,14 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             scoring=sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
             y[y==1] = -1
             y[y==0] = 1
+            refit_score=None
         else:
-            scoring='roc_auc'
+            scoring={'AUC':'roc_auc', 
+                    'APR':'average_precision', 
+                    'ECE': make_scorer(get_ECE, greater_is_better=False, needs_proba=True),
+                    'MCE': make_scorer(get_MCE, greater_is_better=False, needs_proba=True)
+                    }
+            refit_score='AUC'
         #temporary for no-years
         # try:
         #     trained_model=model.set_params(**best_params).fit(X,y)
@@ -1803,16 +1820,17 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             select_k = SelectKBest(f_classif)
             estimators = [('select_k', select_k), ('estimator', model)]
             random_grid={'estimator__'+key:value for key,value in random_grid.items()}
-           num_features=feature_selection_args['K']
+            num_features=feature_selection_args['K']
             num_features=[i for i in num_features if i<=X.shape[1]]
             random_grid.update({'select_k__k':num_features})
             pipe = Pipeline(estimators)
 
             random_search = RandomizedSearchCV(estimator=pipe, param_distributions=random_grid, verbose=1, 
-                                                scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs = n_threads, 
                                                 error_score = 0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
             random_search.fit(X, y)
             best_params=random_search.best_params_
+            train_cv_results=random_search.cv_results_['estimator']
             # best_params={key.split('estimator__')[1]:value for key,value in best_params.items()}
             trained_model=random_search.best_estimator_['estimator']
             selected_features_mask=random_search.best_estimator_['select_k'].get_support()
@@ -1841,10 +1859,11 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
 
         else:
             random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
-                                                scoring=scoring, random_state=random_state, n_jobs = n_threads, 
+                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs = n_threads, 
                                                 error_score = 0.0, **randomSearchCVargs)
             random_search.fit(X, y)
             best_params=random_search.best_params_
+            train_cv_results=random_search.cv_results_
             trained_model=random_search.best_estimator_
             print(random_search.best_params_)
 
@@ -1972,6 +1991,12 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
         dump_filename=os.path.join(output_dir, prefix+"result_overall-overtime-style_{}_{}_{}_{}_Simple_{}_seed-{}_test-size-{}_target={}.txt".format(
             "-".join([str(i) for i in training_years]), modeltype.upper(), "feature-selection" if feature_selection else "", representation, level, str(random_seed), str(test_size).replace('.', ''), str(target)))
         with open(dump_filename, 'w') as f:
+
+            best_rank_index=train_cv_results['rank_test_AUC'] == 1
+            for score in ['AUC', 'APR', 'ECE', 'MCE']:
+
+                f.write("train_cv_score, {}, {} \r\n".format(score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+
             for year in tqdm(sorted(test_years)):
                 for month in range(1, 13, test_month_interval):
                     test_months=np.arange(month, month+test_month_interval, 1)
@@ -2616,6 +2641,12 @@ def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', repres
                 print("Finding the best %s model using a random search" % modeltype.upper())
                 model, selected_features_mask = classifier_select(train_X_df, np.asarray(train_y).ravel(), is_time_series, subject_id, modeltype=modeltype,
                                                                     feature_selection=feature_selection, **feature_selection_args)
+
+                ## write the training result of the best estimator
+                best_rank_index=train_cv_results['rank_test_AUC'] == 1
+                for score in ['AUC', 'APR', 'ECE', 'MCE']:
+                    f.write("modeltype, {}, train_cv_score, {}, {} \r\n".format(modeltype.upper(), score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+                    
                 # Record what the best performing model was
                 model_filename=os.path.join(output_dir, 
                                             prefix + "bestmodel_hospital-overtime_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
