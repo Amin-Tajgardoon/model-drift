@@ -1874,7 +1874,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             scoring=sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
             y[y==1] = -1
             y[y==0] = 1
-            refit_score=None
+            refit_score=True
         else:
             scoring={'AUC':'roc_auc', 
                     'APR':'average_precision', 
@@ -1886,10 +1886,14 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         # try:
         #     trained_model=model.set_params(**best_params).fit(X,y)
         # except:
+
+        selected_features_mask=None
+
+        kfold = StratifiedKFold(n_splits=randomSearchCVargs['cv'], random_state=random_state)
+
         if feature_selection:
             # if modeltype in ['rf', 'lr', 'rbf-svm']:
                 # rfecv = RFECV(estimator=model, cv=3, scoring=scoring, verbose=1, n_jobs=n_threads, **RFECVargs)
-            kfold=StratifiedKFold(n_splits=randomSearchCVargs['cv'], random_state=random_state)
             select_k = SelectKBest(f_classif)
             estimators = [('select_k', select_k), ('estimator', model)]
             random_grid={'estimator__'+key:value for key,value in random_grid.items()}
@@ -1899,15 +1903,15 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             pipe = Pipeline(estimators)
 
             random_search = RandomizedSearchCV(estimator=pipe, param_distributions=random_grid, verbose=1, 
-                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs = n_threads, 
-                                                error_score = 0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
+                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs=n_threads, 
+                                                error_score=0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
             random_search.fit(X, y)
-            best_params=random_search.best_params_
             train_cv_results=random_search.cv_results_
-            # best_params={key.split('estimator__')[1]:value for key,value in best_params.items()}
+            # best_params=random_search.best_params_
+            best_params={key.split('estimator__')[1]:value for key,value in random_search.best_params_.items() if 'estimator__' in key}
             trained_model=random_search.best_estimator_['estimator']
             selected_features_mask=random_search.best_estimator_['select_k'].get_support()
-            
+
             # elif modeltype in ['nb']:
             #     ## for models that cannot be used with RFECV feature-selection
             #     clf=RandomForestClassifier(n_estimators=100, random_state=random_state) 
@@ -1927,21 +1931,32 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             
             print(best_params)
             print('num. selected features= {}'.format(str(sum(selected_features_mask))))
-            return trained_model, selected_features_mask
-
-
+            
         else:
-            random_search = RandomizedSearchCV(estimator = model, param_distributions = random_grid, verbose=1, 
-                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs = n_threads, 
-                                                error_score = 0.0, **randomSearchCVargs)
+            random_search = RandomizedSearchCV(estimator=model, param_distributions=random_grid, verbose=1, 
+                                                scoring=scoring, refit=refit_score, random_state=random_state, n_jobs=n_threads, 
+                                                error_score=0.0, cv=kfold, n_iter=randomSearchCVargs['n_iter'])
             random_search.fit(X, y)
             best_params=random_search.best_params_
             train_cv_results=random_search.cv_results_
             trained_model=random_search.best_estimator_
             print(random_search.best_params_)
 
-            return trained_model
 
+        model.set_params(**best_params)
+        k=selected_features_mask.sum() if feature_selection else None
+        select_k=SelectKBest(f_classif, k=k)
+        y_pred_prob=np.zeros(len(y))
+        for train_index, test_index in kfold.split(X, y):
+            X_train, X_test = X.iloc[train_index,:], X.iloc[test_index,:]
+            y_train = y[train_index]
+            if feature_selection:
+                X_train=select_k.fit_transform(X_train, y_train)
+                X_test=select_k.transform(X_test)
+            model.fit(X_train, y_train)            
+            _, y_pred_prob[test_index], _=get_prediction(modeltype, model, X_test, y=None, subject_id=None)
+
+        return trained_model, y_pred_prob, selected_features_mask
 
 # In[12]:
 
@@ -2037,7 +2052,7 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
 
         print("Finding the best %s model using a random search" % modeltype.upper())
 
-        model, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+        model, y_pred_prob, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
                                 feature_selection=feature_selection, **feature_selection_args)
 
         # Record what the best performing model was
@@ -2069,6 +2084,8 @@ def main_overtime_overall(random_seed=None, max_time=24, test_size=0.2, level='i
             best_rank_index=train_cv_results['rank_test_AUC'] == 1
             for score in ['AUC', 'APR', 'ECE', 'MCE']:
                 f.write("train_cv_score, {}, {} \r\n".format(score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+            f.write("train_label, <{}> \r\n".format(",".join([str(i) for i in y])))
+            f.write("train_y_pred_prob, <{}> \r\n".format(",".join([str(i) for i in y_pred_prob])))
 
             for year in tqdm(sorted(test_years)):
                 for month in range(1, 13, test_month_interval):
@@ -2704,16 +2721,18 @@ def main_hospital_overtime(random_seed=None, max_time=24, level='itemid', repres
                                     prefix + "result_hospital-overtime-style_{}_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
                                         "-".join(train_hospitals), "-".join([str(i) for i in training_years]), "-".join([m.upper() for m in models]), representation, level, str(random_seed), str(target))
                                     )
-        with open(dump_filename, 'a') as f:        
+        with open(dump_filename, 'w') as f:        
             for modeltype in models:
                 print("Finding the best %s model using a random search" % modeltype.upper())
-                model, selected_features_mask = classifier_select(train_X_df, np.asarray(train_y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                model, y_pred_prob, selected_features_mask = classifier_select(train_X_df, np.asarray(train_y).ravel(), is_time_series, subject_id, modeltype=modeltype,
                                                                     feature_selection=feature_selection, **feature_selection_args)
 
                 ## write the training result of the best estimator
                 best_rank_index=train_cv_results['rank_test_AUC'] == 1
                 for score in ['AUC', 'APR', 'ECE', 'MCE']:
                     f.write("modeltype, {}, train_cv_score, {}, {} \r\n".format(modeltype.upper(), score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+                f.write("modeltype, {}, train_label, <{}> \r\n".format(modeltype.upper(), ",".join([str(i) for i in train_y])))
+                f.write("modeltype, {}, train_y_pred_prob, <{}> \r\n".format(modeltype.upper(), ",".join([str(i) for i in y_pred_prob])))
                     
                 # Record what the best performing model was
                 model_filename=os.path.join(output_dir, 
@@ -3035,7 +3054,7 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
 
         print("Finding the best %s model using a random search" % modeltype.upper())
 
-        model, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+        model, y_pred_prob, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
                                 feature_selection=feature_selection, **feature_selection_args)
 
 
@@ -3070,6 +3089,8 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
             best_rank_index=train_cv_results['rank_test_AUC'] == 1
             for score in ['AUC', 'APR', 'ECE', 'MCE']:
                 f.write("train_cv_score, {}, {} \r\n".format(score, str(train_cv_results['mean_test_%s' % score][best_rank_index])))
+            f.write("train_label, <{}> \r\n".format(",".join([str(i) for i in y])))
+            f.write("train_y_pred_prob, <{}> \r\n".format(",".join([str(i) for i in y_pred_prob])))
 
             for year in tqdm(sorted(test_years)):
                 for month in range(1, 13, test_month_interval):

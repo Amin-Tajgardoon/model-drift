@@ -9,11 +9,13 @@ mkdir %OUTPUT_DIR%
 set LOAD_FILTERED_DATA=1
 set TRAIN_TYPES=hospital_overtime
 set TRAIN_HOSP=UPMCPUH
-set MODEL_TYPES=lr rf nb rbf-svm
+set MODEL_TYPES=nb lr rf rbf-svm
 set SEED=0
 set TARGETS=mort_icu los_3
-set representation=pca
+set representation=pca raw
 set save_data=1
+set num_features=100 200 500 1000
+set n_threads=4
 
 python -u %CODE_DIR%/experiments.py ^
     --data_dir %DATA_DIR% ^
@@ -25,7 +27,7 @@ python -u %CODE_DIR%/experiments.py ^
     --target_list %TARGETS% ^
     --load_filtered_data %LOAD_FILTERED_DATA% ^
     --save_data %save_data% ^
-    --n_threads 6 ^
     --train_hospitals %TRAIN_HOSP% ^
     --feature_selection 1 ^
-    --K 100 200 500 1000 ^
+    --K %num_features% ^
+    --n_threads %n_threads% ^

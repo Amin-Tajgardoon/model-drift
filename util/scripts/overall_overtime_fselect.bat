@@ -9,11 +9,13 @@ mkdir %OUTPUT_DIR%
 set LOAD_FILTERED_DATA=1
 set TRAIN_TYPES=overall_overtime
 set TRAIN_YEARS=2008 2009 2010
-set MODEL_TYPES=lr rf nb rbf-svm
+set MODEL_TYPES=nb lr rf rbf-svm
 set SEED=0
 set TARGETS=mort_icu los_3
 set representation=raw pca
+set num_features=100 200 500 1000
 set save_data=1
+set n_threads=4
 
 python -u %CODE_DIR%/experiments.py ^
     --data_dir %DATA_DIR% ^
@@ -27,5 +29,5 @@ python -u %CODE_DIR%/experiments.py ^
     --save_data %save_data% ^
     --train_years %TRAIN_YEARS% ^
     --feature_selection 1 ^
-    --K 100 200 500 1000 2000 ^
-    --n_threads 1 ^
+    --K %num_features% ^
+    --n_threads %n_threads% ^

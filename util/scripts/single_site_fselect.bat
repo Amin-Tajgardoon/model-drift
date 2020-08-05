@@ -15,9 +15,8 @@ set SEED=0
 set TARGETS=mort_icu los_3
 set REPS=raw pca
 set save_data=1
-set num_features=100 200 500 1000 2000
-set n_threads=6
-
+set num_features=100 200 500 1000
+set n_threads=4
 
 FOR %%t IN (%SITE_NAMES%) DO (
     FOR %%r IN (%REPS%) DO (
