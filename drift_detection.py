@@ -382,7 +382,7 @@ def main_mv_test_single_site(data_dir, out_dir, n_threads):
                     for indep_test in ['base_rows', 'base_cols', 'data_rows', 'data_cols'] + independent_tests:
                         columns.append((target, representation, modeltype, indep_test))
 
-    ind=[(hosp, yr, mnth) for hosp in hospitals for yr in year_range for mnth in month_intervals]
+    ind=[(site, yr, mnth) for site in sites for yr in year_range for mnth in month_intervals]
     ind=pd.MultiIndex.from_tuples(ind, names=('hospital', 'year', 'month'))
     cols=pd.MultiIndex.from_tuples(columns, names=('target', 'representation', 'model', 'indep_test'))
     indep_test_df=pd.DataFrame(index=ind, columns=cols)
@@ -406,8 +406,8 @@ def main_mv_test_single_site(data_dir, out_dir, n_threads):
                                     
                                 print('X1_shape:', X1.shape)
 
-                                indep_test_df.loc[:, idx[target, rep, modeltype, 'base_rows']] = X1.shape[0]
-                                indep_test_df.loc[:, idx[target, rep, modeltype, 'base_cols']] = X1.shape[1]
+                                indep_test_df.loc[idx[site,:,:], idx[target, rep, modeltype, 'base_rows']] = X1.shape[0]
+                                indep_test_df.loc[idx[site,:,:], idx[target, rep, modeltype, 'base_cols']] = X1.shape[1]
 
                                 for year in year_range:
                                     for month in month_intervals:
