@@ -233,7 +233,7 @@ def main_error_rate_change_detection(method, out_dir, **kwargs):
                                             outfile.write("target, {}, representation, {}, model, {}, hospital, {}, year, {}, month, {}, warning_index, <{}> \r\n".format(target, representation, modeltype.upper(), hosp, str(year), str(month), ",".join([str(i) for i in warn_idx])))
                                             outfile.write("target, {}, representation, {}, model, {}, hospital, {}, year, {}, month, {}, drift_index, <{}> \r\n".format(target, representation, modeltype.upper(), hosp, str(year), str(month), ",".join([str(i) for i in drift_idx])))
 
-def main_mv_test_hospital_overtime(data_dir, out_dir, n_threads):
+def main_mv_test_hospital_overtime(data_dir, out_dir, out_filename, n_threads, reps):
 
     df_results = pd.read_pickle(os.path.join(out_dir, "results_df_hospital_overtime.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('hospital-overtime-style' in f)]
@@ -277,7 +277,7 @@ def main_mv_test_hospital_overtime(data_dir, out_dir, n_threads):
                             for hosp in hospitals:
                                 for year in year_range:
                                     for month in month_intervals:
-                                        if ~df_results.loc[(hosp, year, month), idx[target,:,rep, main_measures]].isna().all():
+                                        if ~df_results.loc[(hosp, year, month), idx[target, modeltype, rep, main_measures]].isna().all():
                                             ## if any non-null measures is available for (hosp, year, month) index
                                             print(indep_test, target, rep, modeltype, hosp, year, month)
                                             data_key="X_test_"+hosp+"_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
@@ -292,23 +292,27 @@ def main_mv_test_hospital_overtime(data_dir, out_dir, n_threads):
 
                                             t0=time.time()
                                             np.random.seed(0)
-                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, auto=True)
+                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, reps=reps, auto=True)
                                             t1=time.time()
                                             print("runtime=", str((t1-t0)), "seconds")
                                             print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
 
                                             indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, indep_test]] = pvalue
-                                            indep_test_df.to_csv(os.path.join(out_dir, "indep_tests.csv"))
-                                            indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
+                                            indep_test_df.to_csv(os.path.join(out_dir, out_filename+".csv"))
+                                            indep_test_df.to_pickle(os.path.join(out_dir, out_filename+".pkl"))
                                             print('*'*30)
 
-def main_mv_test_overall_overtime(data_dir, out_dir, n_threads):
+def main_mv_test_overall_overtime(data_dir, out_dir, out_filename, n_threads, reps):
 
+    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_overall_overtime.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('overall-overtime-style' in f)]
+
+    main_measures = ['AUC', 'APR', 'ECE']
+    training_years=[2008,2009,2010]
     
     columns=[]
     for target in targets:
-            for representation in reps:
+            for representation in representations:
                 for modeltype in models:
                     for indep_test in ['base_rows', 'base_cols', 'data_rows', 'data_cols'] + independent_tests:
                         columns.append((target, representation, modeltype, indep_test))
@@ -321,17 +325,17 @@ def main_mv_test_overall_overtime(data_dir, out_dir, n_threads):
     for indep_test in independent_tests:
         print('indep_test:', indep_test)
         for target in targets:
-            for rep in reps:
+            for rep in representations:
                 for f in data_files:
-                    if (target in f) and ("data_flat_"+rep in f):
+                    if (target in f) and ("_"+rep+"_" in f):
                         print(target, rep)
                         for modeltype in models:
                             print(modeltype)
-                            data_key= "X_test_UPMCPUH_2011_1-2_"+modeltype.upper()
+                            data_key= "X_train_" + "-".join([str(i) for i in training_years]) + "_" + modeltype.upper()
                             try:
                                 X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
                             except KeyError as ke:
-                                data_key= "X_test_UPMCPUH_2011_1-2_"+modeltype
+                                data_key="X_train_" + "-".join([str(i) for i in training_years])
                                 X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
                                 
                             print('X1_shape:', X1.shape)
@@ -339,40 +343,38 @@ def main_mv_test_overall_overtime(data_dir, out_dir, n_threads):
                             indep_test_df.loc[:, idx[target, rep, modeltype, 'base_rows']] = X1.shape[0]
                             indep_test_df.loc[:, idx[target, rep, modeltype, 'base_cols']] = X1.shape[1]
 
-                            for hosp in hospitals:
-                                for year in year_range:
-                                    for month in month_intervals:
-                                        if ~df_results.loc[(hosp, year, month), idx[target,:,rep, main_measures]].isna().all():
-                                            ## if any non-null measures is available for (hosp, year, month) index
-                                            print(indep_test, target, rep, modeltype, hosp, year, month)
-                                            data_key="X_test_"+hosp+"_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
-                                            try:
-                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
-                                            except KeyError as ke:
-                                                data_key="X_test_"+hosp+"_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype
-                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
-                                            print('X2_shape:', X2.shape)
-                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, 'data_rows']] = X2.shape[0]
-                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, 'data_cols']] = X2.shape[1]
+                            for year in year_range:
+                                for month in month_intervals:
+                                    if ~df_results.loc[(year, month), idx[target, modeltype, rep, main_measures]].isna().all():
+                                        ## if any non-null measures is available for (hosp, year, month) index
+                                        print(indep_test, target, rep, modeltype, year, month)
+                                        data_key="X_test_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
+                                        try:
+                                            X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                        except KeyError as ke:
+                                            data_key="X_test_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])
+                                            X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                        print('X2_shape:', X2.shape)
+                                        indep_test_df.loc[(year, month), idx[target, rep, modeltype, 'data_rows']] = X2.shape[0]
+                                        indep_test_df.loc[(year, month), idx[target, rep, modeltype, 'data_cols']] = X2.shape[1]
 
-                                            t0=time.time()
-                                            np.random.seed(0)
-                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=6, auto=True)
-                                            t1=time.time()
-                                            print("runtime=", str((t1-t0)), "seconds")
-                                            print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
+                                        t0=time.time()
+                                        np.random.seed(0)
+                                        stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, reps=reps, auto=True)
+                                        t1=time.time()
+                                        print("runtime=", str((t1-t0)), "seconds")
+                                        print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
 
-                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, indep_test]] = pvalue
-                                            indep_test_df.to_csv(os.path.join(out_dir, "indep_tests.csv"))
-                                            indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
-                                            print('*'*30)
+                                        indep_test_df.loc[(year, month), idx[target, rep, modeltype, indep_test]] = pvalue
+                                        indep_test_df.to_csv(os.path.join(out_dir, out_filename+".csv"))
+                                        indep_test_df.to_pickle(os.path.join(out_dir, out_filename+".pkl"))
+                                        print('*'*30)
 
-def main_mv_test_single_site(data_dir, out_dir, n_threads):
+def main_mv_test_single_site(data_dir, out_dir, out_filename, n_threads, reps, sites):
     df_results = pd.read_pickle(os.path.join(out_dir, "results_df_single_site.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('single-site-style' in f)]
     
     main_measures = ['AUC', 'APR', 'ECE']
-    sites=['MICU', 'CTICU', 'UPMCPUH', 'UPMCSHY']
     training_years=[2008,2009,2010]
 
     columns=[]
@@ -411,7 +413,7 @@ def main_mv_test_single_site(data_dir, out_dir, n_threads):
 
                                 for year in year_range:
                                     for month in month_intervals:
-                                        if ~df_results.loc[(site, year, month), idx[target,:,rep, main_measures]].isna().all():
+                                        if ~df_results.loc[(site, year, month), idx[target, modeltype, rep, main_measures]].isna().all():
                                             ## if any non-null measures is available for (site, year, month) index
                                             print(indep_test, site, target, rep, modeltype, year, month)
                                             data_key="X_test_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
@@ -426,14 +428,14 @@ def main_mv_test_single_site(data_dir, out_dir, n_threads):
 
                                             t0=time.time()
                                             np.random.seed(0)
-                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, auto=True)
+                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, reps=reps, auto=True)
                                             t1=time.time()
                                             print("runtime=", str((t1-t0)), "seconds")
                                             print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
 
                                             indep_test_df.loc[(site, year, month), idx[target, rep, modeltype, indep_test]] = pvalue
-                                            indep_test_df.to_csv(os.path.join(out_dir, "indep_tests.csv"))
-                                            indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
+                                            indep_test_df.to_csv(os.path.join(out_dir, out_filename+".csv"))
+                                            indep_test_df.to_pickle(os.path.join(out_dir, out_filename+".pkl"))
                                             print('*'*30)
 
 if __name__ == "__main__":
@@ -445,30 +447,35 @@ if __name__ == "__main__":
     parser.add_argument('--out_dir', type=str, default="", help="full path to output directory")
     parser.add_argument('--source_train_type', type=str, default=None, help="['overall_overtime', 'hospital_wise', 'icu_type', 'single_site', 'hospital_overtime']")
     parser.add_argument('--n_threads', type=int, default=1, help="used for multivariate tests")
+    parser.add_argument('--sites', type=str, nargs='+', default=None, help="required when source_train_type=single_site, example: ['MICU', 'CTICU', 'UPMCPUH', 'UPMCSHY']")
+    parser.add_argument('--reps', type=int, default=None, help="number of repeats in permutation multivariate tests")
+
 
     args = parser.parse_args()
-    
+
+    idx=pd.IndexSlice
+
+    if isinstance(args.sites, str):
+        args.sites=[args.sites]
+
+    dir_path=args.dir_path
+    out_dir=args.out_dir
+    if out_dir=="":
+        out_dir=dir_path
+
     targets = ['mort_icu', 'los_3']
     representations = ['raw', 'pca']
     models=['rf','lr','nb','rbf-svm']
 
-    site_info = pd.read_pickle(os.path.join(dir_path, "site_info.pkl"))
-    hospitals = sorted(site_info["hospital"].unique().tolist())
-    icu_units = sorted(site_info["icu_category"].unique().tolist())
-    # hospitals = ['UPMCBED','UPMCEAS','UPMCHAM','UPMCHZN','UPMCMCK','UPMCMER','UPMCMWH','UPMCNOR','UPMCPAS','UPMCPUH','UPMCSHY','UPMCSMH']
+    # site_info = pd.read_pickle(os.path.join(dir_path, "site_info.pkl"))
+    hospitals = ['UPMCBED','UPMCEAS','UPMCHAM','UPMCHZN','UPMCMCK','UPMCMER','UPMCMWH','UPMCNOR','UPMCPAS','UPMCPUH','UPMCSHY','UPMCSMH']
+    # icu_units = sorted(site_info["icu_category"].unique().tolist())
     year_range = np.arange(2011, 2015)
     month_step = 2
     month_intervals = np.arange(month_step, 13, month_step)
 
     # independent_tests = ["CCA", "Dcorr", "RV", "Hsic", "HHG", "MGC"]
     independent_tests = ["CCA", "Dcorr", "RV"]
-
-    idx=pd.IndexSlice
-
-    dir_path=args.dir_path
-    out_dir=args.out_dir
-    if out_dir=="":
-        out_dir=dir_path
 
     t0=time.time()
     
@@ -477,10 +484,13 @@ if __name__ == "__main__":
     elif args.exp_type=="class_dist_change_detection":
         main_class_dist_change_detection(dir_path, out_dir)
     elif args.exp_type=="mv_test":
+        out_filename="indep_tests_"+args.source_train_type
         if args.source_train_type=="hospital_overtime":
-            main_mv_test_hospital_overtime(dir_path, out_dir, args.n_threads)
+            main_mv_test_hospital_overtime(dir_path, out_dir, out_filename, args.n_threads, reps=args.reps)
         elif args.source_train_type=="single_site":
-            main_mv_test_single_site(dir_path, out_dir, args.n_threads)
+            main_mv_test_single_site(dir_path, out_dir, out_filename, args.n_threads, reps=args.reps, sites=args.sites)
+        elif args.source_train_type=="overall_overtime":
+            main_mv_test_overall_overtime(dir_path, out_dir, out_filename, args.n_threads, reps=args.reps)
         else:
             raise "method for "+args.source_train_type+" not found!"
     else:
