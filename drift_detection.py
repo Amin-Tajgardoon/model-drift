@@ -452,7 +452,7 @@ if __name__ == "__main__":
     representations = ['raw', 'pca']
     models=['rf','lr','nb','rbf-svm']
 
-    site_info = pd.read_pickle("E:/Data/HIDENIC_EXTRACT_OUTPUT_DIR/POP_SIZE_0/ITEMID_REP/site_info.pkl")
+    site_info = pd.read_pickle(os.path.join(dir_path, "site_info.pkl"))
     hospitals = sorted(site_info["hospital"].unique().tolist())
     icu_units = sorted(site_info["icu_category"].unique().tolist())
     # hospitals = ['UPMCBED','UPMCEAS','UPMCHAM','UPMCHZN','UPMCMCK','UPMCMER','UPMCMWH','UPMCNOR','UPMCPAS','UPMCPUH','UPMCSHY','UPMCSMH']
