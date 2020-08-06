@@ -134,3 +134,4 @@ util/scripts/test.bat
 notebooks/Untitled*
 notebooks/*.ipynb
 notebooks/drift_detection.ipynb
+util/scripts/*.bat

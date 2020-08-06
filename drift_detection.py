@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import fisher_exact
 from skmultiflow.drift_detection import *
+from hyppo.ksample import KSample
 
 import argparse
 import os
@@ -74,7 +75,6 @@ def get_stream_drifts(method, base_error_stream, cur_error_stream, **kwargs):
                 cur_drift_idx.append(i-b)
  
     return all_warn_idx, all_drift_idx, base_warn_idx, base_drift_idx, cur_warn_idx, cur_drift_idx 
-
 
 def get_sorted_labels(labels, y_pred_probs, subject_ids):
     in_times=get_intimes(subject_ids)
@@ -233,34 +233,79 @@ def main_error_rate_change_detection(method, out_dir, **kwargs):
                                             outfile.write("target, {}, representation, {}, model, {}, hospital, {}, year, {}, month, {}, warning_index, <{}> \r\n".format(target, representation, modeltype.upper(), hosp, str(year), str(month), ",".join([str(i) for i in warn_idx])))
                                             outfile.write("target, {}, representation, {}, model, {}, hospital, {}, year, {}, month, {}, drift_index, <{}> \r\n".format(target, representation, modeltype.upper(), hosp, str(year), str(month), ",".join([str(i) for i in drift_idx])))
 
-  
+def main_mv_test_hospital_overtime(data_dir, out_dir, n_threads):
 
-
-
-def main_feature_dist_change_detection():
-
-    data_dir="E:/Data/HIDENIC_EXTRACT_OUTPUT_DIR/POP_SIZE_0/ITEMID_REP/preprocessed_data/"
-    data_files=[f for f in os.listdir(data_dir) if ('hospital-overtime-style' in f) and ('data_flat' in f)]
-
-    data_files
-
-    out_dir="../../../output/HIDENIC_overtime_analysis/hospital_overtime_fselect/"
-
-    df_results = pd.read_pickle(os.path.join(out_dir, "results_df.pkl"))
-    site_info = pd.read_pickle("E:/Data/HIDENIC_EXTRACT_OUTPUT_DIR/POP_SIZE_0/ITEMID_REP/site_info.pkl")
-
-    models=['rf','lr','nb','rbf-svm']
-    targets = ['mort_icu', 'los_3']
-    reps = ['pca', 'raw']
-    independent_tests = ["CCA", "Dcorr", "RV", "Hsic", "HHG", "MGC"]
+    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_hospital_overtime.pkl"))
+    data_files=[f for f in os.listdir(data_dir) if ('hospital-overtime-style' in f)]
+    
     main_measures = ['AUC', 'APR', 'ECE']
+    train_hospital='UPMCPUH'
 
+    columns=[]
+    for target in targets:
+            for representation in representations:
+                for modeltype in models:
+                    for indep_test in ['base_rows', 'base_cols', 'data_rows', 'data_cols'] + independent_tests:
+                        columns.append((target, representation, modeltype, indep_test))
 
-    hospitals = sorted(site_info["hospital"].unique().tolist())
-    year_range = np.arange(2011, 2015)
-    month_step = 2
-    month_intervals = np.arange(month_step, 13, month_step)
+    ind=[(hosp, yr, mnth) for hosp in hospitals for yr in year_range for mnth in month_intervals]
+    ind=pd.MultiIndex.from_tuples(ind, names=('hospital', 'year', 'month'))
+    cols=pd.MultiIndex.from_tuples(columns, names=('target', 'representation', 'model', 'indep_test'))
+    indep_test_df=pd.DataFrame(index=ind, columns=cols)
 
+    for indep_test in independent_tests:
+        print('indep_test:', indep_test)
+        for target in targets:
+            for rep in representations:
+                for f in data_files:
+                    if (target in f) and ("_"+rep+"_" in f):
+                        print(target, rep)
+                        for modeltype in models:
+                            print(modeltype)
+                            data_key= "X_train_"+train_hospital+"_"+modeltype.upper()
+                            try:
+                                X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                            except KeyError as ke:
+                                data_key= "X_train_"+train_hospital+"_"+modeltype
+                                X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                
+                            print('X1_shape:', X1.shape)
+
+                            indep_test_df.loc[:, idx[target, rep, modeltype, 'base_rows']] = X1.shape[0]
+                            indep_test_df.loc[:, idx[target, rep, modeltype, 'base_cols']] = X1.shape[1]
+
+                            for hosp in hospitals:
+                                for year in year_range:
+                                    for month in month_intervals:
+                                        if ~df_results.loc[(hosp, year, month), idx[target,:,rep, main_measures]].isna().all():
+                                            ## if any non-null measures is available for (hosp, year, month) index
+                                            print(indep_test, target, rep, modeltype, hosp, year, month)
+                                            data_key="X_test_"+hosp+"_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
+                                            try:
+                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                            except KeyError as ke:
+                                                data_key="X_test_"+hosp+"_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype
+                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                            print('X2_shape:', X2.shape)
+                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, 'data_rows']] = X2.shape[0]
+                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, 'data_cols']] = X2.shape[1]
+
+                                            t0=time.time()
+                                            np.random.seed(0)
+                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, auto=True)
+                                            t1=time.time()
+                                            print("runtime=", str((t1-t0)), "seconds")
+                                            print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
+
+                                            indep_test_df.loc[(hosp, year, month), idx[target, rep, modeltype, indep_test]] = pvalue
+                                            indep_test_df.to_csv(os.path.join(out_dir, "indep_tests.csv"))
+                                            indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
+                                            print('*'*30)
+
+def main_mv_test_overall_overtime(data_dir, out_dir, n_threads):
+
+    data_files=[f for f in os.listdir(data_dir) if ('overall-overtime-style' in f)]
+    
     columns=[]
     for target in targets:
             for representation in reps:
@@ -268,8 +313,8 @@ def main_feature_dist_change_detection():
                     for indep_test in ['base_rows', 'base_cols', 'data_rows', 'data_cols'] + independent_tests:
                         columns.append((target, representation, modeltype, indep_test))
 
-    ind=[(hosp, yr, mnth) for hosp in hospitals for yr in year_range for mnth in month_intervals]
-    ind=pd.MultiIndex.from_tuples(ind, names=('hospital', 'year', 'month'))
+    ind=[(yr, mnth) for yr in year_range for mnth in month_intervals]
+    ind=pd.MultiIndex.from_tuples(ind, names=('year', 'month'))
     cols=pd.MultiIndex.from_tuples(columns, names=('target', 'representation', 'model', 'indep_test'))
     indep_test_df=pd.DataFrame(index=ind, columns=cols)
 
@@ -322,24 +367,101 @@ def main_feature_dist_change_detection():
                                             indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
                                             print('*'*30)
 
+def main_mv_test_single_site(data_dir, out_dir, n_threads):
+    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_single_site.pkl"))
+    data_files=[f for f in os.listdir(data_dir) if ('single-site-style' in f)]
+    
+    main_measures = ['AUC', 'APR', 'ECE']
+    sites=['MICU', 'CTICU', 'UPMCPUH', 'UPMCSHY']
+    training_years=[2008,2009,2010]
+
+    columns=[]
+    for target in targets:
+            for representation in representations:
+                for modeltype in models:
+                    for indep_test in ['base_rows', 'base_cols', 'data_rows', 'data_cols'] + independent_tests:
+                        columns.append((target, representation, modeltype, indep_test))
+
+    ind=[(hosp, yr, mnth) for hosp in hospitals for yr in year_range for mnth in month_intervals]
+    ind=pd.MultiIndex.from_tuples(ind, names=('hospital', 'year', 'month'))
+    cols=pd.MultiIndex.from_tuples(columns, names=('target', 'representation', 'model', 'indep_test'))
+    indep_test_df=pd.DataFrame(index=ind, columns=cols)
+
+    for indep_test in independent_tests:
+        for site in sites:
+            for target in targets:
+                for rep in representations:
+                    for f in data_files:
+                        if (target in f) and ("_"+rep+"_" in f) and ("_"+site+"_" in f):
+                            print(target, rep)
+                            for modeltype in models:
+                                print(modeltype)
+                                
+                                data_key= "X_train_"+"-".join([str(i) for i in training_years])+"_"+modeltype.upper()
+                                try:
+                                    X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                except KeyError as ke:
+                                    data_key= "X_train_"+"-".join([str(i) for i in training_years])
+                                    X1=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                    
+                                print('X1_shape:', X1.shape)
+
+                                indep_test_df.loc[:, idx[target, rep, modeltype, 'base_rows']] = X1.shape[0]
+                                indep_test_df.loc[:, idx[target, rep, modeltype, 'base_cols']] = X1.shape[1]
+
+                                for year in year_range:
+                                    for month in month_intervals:
+                                        if ~df_results.loc[(site, year, month), idx[target,:,rep, main_measures]].isna().all():
+                                            ## if any non-null measures is available for (site, year, month) index
+                                            print(indep_test, site, target, rep, modeltype, year, month)
+                                            data_key="X_test_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])+"_"+modeltype.upper()
+                                            try:
+                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                            except KeyError as ke:
+                                                data_key="X_test_"+str(year)+"_"+"-".join([str(i) for i in [month-1, month]])
+                                                X2=pd.read_hdf(os.path.join(data_dir, f), key=data_key)
+                                            print('X2_shape:', X2.shape)
+                                            indep_test_df.loc[(site, year, month), idx[target, rep, modeltype, 'data_rows']] = X2.shape[0]
+                                            indep_test_df.loc[(site, year, month), idx[target, rep, modeltype, 'data_cols']] = X2.shape[1]
+
+                                            t0=time.time()
+                                            np.random.seed(0)
+                                            stat, pvalue = KSample(indep_test).test(X1.values, X2.values, workers=n_threads, auto=True)
+                                            t1=time.time()
+                                            print("runtime=", str((t1-t0)), "seconds")
+                                            print("stat, pval= {:0.3f}, {:0.3f}".format(stat, pvalue))
+
+                                            indep_test_df.loc[(site, year, month), idx[target, rep, modeltype, indep_test]] = pvalue
+                                            indep_test_df.to_csv(os.path.join(out_dir, "indep_tests.csv"))
+                                            indep_test_df.to_pickle(os.path.join(out_dir, "indep_tests.pkl"))
+                                            print('*'*30)
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='drift detection for the overtime-hospital experiments')
-    parser.add_argument('--exp_type', type=str, default=None, choices=["error_rate_change_detection", "class_dist_change_detection", "feature_dist_change_ditection"])
+    parser.add_argument('--exp_type', type=str, default=None, choices=["error_rate_change_detection", "class_dist_change_detection", "mv_test"])
     parser.add_argument('--drift_detection_method', type=str, default="ADWIN", choices=["ADWIN", "DDM", "EDDM", "HDDM_A", "HDDM_W", "KSWIN", "PageHinkley"])
     parser.add_argument('--dir_path', type=str, default="", help="full path to directory containing probability and label files")
     parser.add_argument('--out_dir', type=str, default="", help="full path to output directory")
+    parser.add_argument('--source_train_type', type=str, default=None, help="['overall_overtime', 'hospital_wise', 'icu_type', 'single_site', 'hospital_overtime']")
+    parser.add_argument('--n_threads', type=int, default=1, help="used for multivariate tests")
+
     args = parser.parse_args()
     
     targets = ['mort_icu', 'los_3']
     representations = ['raw', 'pca']
     models=['rf','lr','nb','rbf-svm']
 
-    hospitals = ['UPMCBED','UPMCEAS','UPMCHAM','UPMCHZN','UPMCMCK','UPMCMER','UPMCMWH','UPMCNOR','UPMCPAS','UPMCPUH','UPMCSHY','UPMCSMH']
+    site_info = pd.read_pickle("E:/Data/HIDENIC_EXTRACT_OUTPUT_DIR/POP_SIZE_0/ITEMID_REP/site_info.pkl")
+    hospitals = sorted(site_info["hospital"].unique().tolist())
+    icu_units = sorted(site_info["icu_category"].unique().tolist())
+    # hospitals = ['UPMCBED','UPMCEAS','UPMCHAM','UPMCHZN','UPMCMCK','UPMCMER','UPMCMWH','UPMCNOR','UPMCPAS','UPMCPUH','UPMCSHY','UPMCSMH']
     year_range = np.arange(2011, 2015)
     month_step = 2
     month_intervals = np.arange(month_step, 13, month_step)
+
+    # independent_tests = ["CCA", "Dcorr", "RV", "Hsic", "HHG", "MGC"]
+    independent_tests = ["CCA", "Dcorr", "RV"]
 
     idx=pd.IndexSlice
 
@@ -354,8 +476,15 @@ if __name__ == "__main__":
         main_error_rate_change_detection(args.drift_detection_method, out_dir)
     elif args.exp_type=="class_dist_change_detection":
         main_class_dist_change_detection(dir_path, out_dir)
-    elif args.exp_type=="feature_dist_change_detection":
-        main_feature_dist_change_detection(dir_path, out_dir)
+    elif args.exp_type=="mv_test":
+        if args.source_train_type=="hospital_overtime":
+            main_mv_test_hospital_overtime(dir_path, out_dir, args.n_threads)
+        elif args.source_train_type=="single_site":
+            main_mv_test_single_site(dir_path, out_dir, args.n_threads)
+        else:
+            raise "method for "+args.source_train_type+" not found!"
+    else:
+        raise "method for "+args.exp_type+" not found!"
 
     t1=time.time()
     print("Done. Total time={:0.1f} seconds".format(t1-t0))
