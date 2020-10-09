@@ -4,7 +4,7 @@ set CODE_DIR="C:\Users\mot16\Box Sync\Projects\Thesis\code\HIDENIC_overtime_anal
 set data_dir="C:\Users\mot16\Box Sync\Projects\Thesis\output\HIDENIC_overtime_analysis\hospital_overtime_fselect"
 
 set source_train_type=hospital_overtime
-set run_bootstrap=1
+set run_bootstrap=0
 set n_bootstrap=1000
 set generate_stats=1
 set stat_test=mannwhitneyu

@@ -235,7 +235,7 @@ def main_error_rate_change_detection(method, out_dir, **kwargs):
 
 def main_mv_test_hospital_overtime(data_dir, out_dir, out_filename, n_threads, reps):
 
-    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_hospital_overtime.pkl"))
+    df_results = pd.read_pickle(os.path.join(data_dir, "results_df_hospital_overtime.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('hospital-overtime-style' in f)]
     
     main_measures = ['AUC', 'APR', 'ECE']
@@ -304,7 +304,7 @@ def main_mv_test_hospital_overtime(data_dir, out_dir, out_filename, n_threads, r
 
 def main_mv_test_overall_overtime(data_dir, out_dir, out_filename, n_threads, reps):
 
-    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_overall_overtime.pkl"))
+    df_results = pd.read_pickle(os.path.join(data_dir, "results_df_overall_overtime.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('overall-overtime-style' in f)]
 
     main_measures = ['AUC', 'APR', 'ECE']
@@ -371,7 +371,7 @@ def main_mv_test_overall_overtime(data_dir, out_dir, out_filename, n_threads, re
                                         print('*'*30)
 
 def main_mv_test_single_site(data_dir, out_dir, out_filename, n_threads, reps, sites):
-    df_results = pd.read_pickle(os.path.join(out_dir, "results_df_single_site.pkl"))
+    df_results = pd.read_pickle(os.path.join(data_dir, "results_df_single_site.pkl"))
     data_files=[f for f in os.listdir(data_dir) if ('single-site-style' in f)]
     
     main_measures = ['AUC', 'APR', 'ECE']
@@ -484,7 +484,7 @@ if __name__ == "__main__":
     elif args.exp_type=="class_dist_change_detection":
         main_class_dist_change_detection(dir_path, out_dir)
     elif args.exp_type=="mv_test":
-        out_filename="indep_tests_"+args.source_train_type
+        out_filename="indep_tests_reps_"+str(args.reps)+"_"+args.source_train_type
         if args.source_train_type=="hospital_overtime":
             main_mv_test_hospital_overtime(dir_path, out_dir, out_filename, args.n_threads, reps=args.reps)
         elif args.source_train_type=="single_site":

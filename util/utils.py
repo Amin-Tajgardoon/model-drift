@@ -96,8 +96,3 @@ def auc_delong_test(y1, probs1, y2, probs2):
     ci2=(ci2[0], ci2[2])
 
     return auc1, ci1, auc2, ci2, pval
-
-
-
-    
-    return pval

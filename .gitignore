@@ -135,3 +135,5 @@ notebooks/Untitled*
 notebooks/*.ipynb
 notebooks/drift_detection.ipynb
 util/scripts/*.bat
+notebooks/drift_true_labels.ipynb
+notebooks/display_results.ipynb
