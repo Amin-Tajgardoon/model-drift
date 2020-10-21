@@ -18,6 +18,7 @@ import sys
 import pandas as pd
 import numpy as np
 import os
+import pathlib
 
 from sklearn.svm import SVC, LinearSVC, OneClassSVM
 from sklearn.neural_network import MLPClassifier
@@ -36,7 +37,20 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import label_binarize
 from scipy import stats
 from util.utils import get_calibration_metrics
+from sklearn.utils import resample
 
+import torch
+from torch import nn
+from torch import Tensor
+from torch.autograd import grad
+from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset
+from torch.utils.data import Dataset
+from torch.utils.data.sampler import SubsetRandomSampler
+from torch.utils.tensorboard import SummaryWriter
+
+
+from tqdm import tqdm, trange
 
 # #for GRU-D
 # import torch
@@ -154,7 +168,9 @@ def get_prediction(modeltype, model, X_df, y, subject_id):
         pred= model.predict(X_df)
         pred[pred==1] = 0
         pred[pred==-1] = 1
-
+    elif modeltype == 'mlp_torch':
+        y_pred_prob = predict_mlp_torch(model, X_df.values, y, batch_size=64)
+        pred=[1 if x > 0.5 else 0 for x in y_pred_prob]
     else:
         raise Exception('dont know proba function for classifier = "%s"' % modeltype)
     return y, y_pred_prob, pred
@@ -1454,11 +1470,169 @@ def create_rnn(seqlen, n_features, hidden_layer_size, optimizer, activation, dro
 
     return model
 
+class MLP_large(nn.Module):
+    def __init__(self, in_size):
+        super().__init__()      
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(in_size, 1000),
+            nn.Dropout(p=0.5),
+            nn.ReLU(),
+            nn.Linear(1000, 500),
+            nn.Dropout(p=0.5)
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(500, 200),
+            nn.Dropout(p=0.5),
+            nn.ReLU(),
+            nn.Linear(200, 100),
+            nn.Dropout(p=0.5),
+            nn.ReLU(),
+            nn.Linear(100, 2),
+            nn.Softmax(dim=1)
+        )
+        
+    def forward(self, x):
+        fe = self.feature_extractor(x)
+        return self.classifier(fe)
 
-# # def classifier_select
+class MLP_small(nn.Module):
+    def __init__(self, in_size):
+        super().__init__()      
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(in_size, 500),
+            nn.Dropout(p=0.5),
+            nn.ReLU(),
+            nn.Linear(500, 100),
+            nn.Dropout(p=0.5)
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(100, 50),
+            nn.Dropout(p=0.5),
+            nn.ReLU(),
+            nn.Linear(50, 2),
+            nn.Softmax(dim=1)
+        )
 
-# In[11]:
+    def forward(self, x):
+        fe = self.feature_extractor(x)
+        return self.classifier(fe)
 
+def loop_iterable(iterable):
+    while True:
+        yield from iterable
+        
+def predict_mlp_torch(model_state, X, y, batch_size):
+    with torch.no_grad():
+        mlp_model = best_params['mlp_model']
+        model = mlp_model(X.shape[1])
+        model.load_state_dict(model_state)
+        dataset = TensorDataset(Tensor(X), Tensor(y).view(-1,1))
+        dataloader = DataLoader(dataset, batch_size=batch_size, drop_last=False, num_workers=1, pin_memory=True)
+        y_pred = []
+        for x, y_true in dataloader:
+            x, y_true = x.to(device), y_true.to(device)
+            y_pred += model(x)[:,1].numpy().tolist()
+    return np.array(y_pred)
+
+def create_dataloaders(X, y, batch_size):
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, stratify=y, shuffle=True, random_state=42)
+    train_dataset = TensorDataset(Tensor(X_train), Tensor(y_train).view(-1,1))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, drop_last=True,
+                              num_workers=1, pin_memory=True)
+    val_dataset = TensorDataset(Tensor(X_val), Tensor(y_val).view(-1,1))
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, drop_last=False,
+                              num_workers=1, pin_memory=True)
+
+    return train_loader, val_loader
+
+def do_epoch(model, dataloader, criterion, n_iter, optim=None):
+    total_loss, total_accuracy = 0, 0
+    total_auc, auc_iter = 0, 0
+    batch_iterator = loop_iterable(dataloader)
+    # for x, y_true in tqdm(dataloader, leave=False):
+    for _ in trange(n_iter, leave=False):
+        x, y_true = next(batch_iterator)
+        x, y_true = x.to(device), y_true.to(device)
+        y_pred = model(x)[:,1].view(-1,1)
+        loss = criterion(y_pred, y_true)
+
+        if optim is not None:
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+
+        total_loss += loss.item()
+        total_accuracy += (y_pred.max(1)[1] == y_true).float().mean().item()
+        with torch.no_grad():
+            try:
+                total_auc += roc_auc_score(y_true.numpy(), y_pred.numpy())
+                auc_iter += 1
+            except:
+                pass
+    mean_loss = total_loss / n_iter #len(dataloader)
+    mean_accuracy = total_accuracy / n_iter #len(dataloader)
+    mean_auc = total_auc / auc_iter if auc_iter!=0 else 0
+
+    return mean_loss, mean_accuracy, mean_auc
+
+
+def mlp_torch(X, y, params, batch_size, epochs, n_iter, logdir):
+    mlp_model, weight_decay, lr, auc_plateau_max = params['mlp_model'], params['weight_decay'], params['lr'], params['auc_plateau_max']
+    train_loader, val_loader = create_dataloaders(X, y, batch_size)
+    model = mlp_model(in_size=X.shape[1]).to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    lr_schedule = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=1, verbose=True, eps=1e-8)
+    criterion = torch.nn.BCELoss()
+
+    auc_plateau = 0
+    best_auc = 0
+    best_model_state = None
+    logdir_suffix = model.__class__.__name__ + ',lr=' + str(lr) + ',l2=' + str(weight_decay)
+    writer = SummaryWriter(logdir/logdir_suffix)
+    for epoch in range(1, epochs+1):
+        model.train()
+        n_iter = len(train_loader)*2
+        train_loss, train_accuracy, train_auc = do_epoch(model, train_loader, criterion, n_iter=n_iter, optim=optim)
+
+        model.eval()
+        with torch.no_grad():
+            n_iter = len(val_loader)
+            val_loss, val_accuracy, val_auc = do_epoch(model, val_loader, criterion, n_iter=n_iter, optim=None)
+
+        writer.add_scalars('loss', {"train_loss": train_loss,
+                                    "val_loss": val_loss}, epoch)
+        writer.add_scalars('auc', {"train_auc": train_auc,
+                                    "val_auc": val_auc}, epoch)
+        writer.add_scalars('acc', {"train_acc": train_accuracy,
+                                    "val_acc": val_accuracy}, epoch)
+
+        tqdm.write(f'EPOCH {epoch:03d}: train_loss={train_loss:.4f}, train_accuracy={train_accuracy:.4f}, '
+                   f'train_auc={train_auc:.4f}, '
+                   f'val_loss={val_loss:.4f}, val_accuracy={val_accuracy:.4f}, val_auc={val_auc:.4f}')
+
+        if epoch == 1:
+            best_model_state = model.state_dict()
+
+        if val_auc > best_auc:
+            auc_plateau = 0
+            print('Saving model...')
+            best_auc = val_auc
+            # torch.save(model.state_dict(), outdir/'mlp.pt')
+            best_model_state = model.state_dict()
+        else:
+            auc_plateau += 1
+            if auc_plateau > auc_plateau_max:
+                print(f"val_auc not improved for {auc_plateau_max:03d} epochs. Stopping the training ...\n")
+                return best_model_state, best_auc
+
+        lr_schedule.step(val_loss)
+
+    writer.flush()
+    writer.close()
+
+    return best_model_state, best_auc
 
 def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', random_state=1, feature_selection=False,
                         **feature_selection_args):
@@ -1477,6 +1651,7 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
     global train_cv_results
     global train_means
     global n_threads
+    global logdir
 
     idx = pd.IndexSlice
 
@@ -1720,8 +1895,8 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
         if modeltype == 'rf':
             model=RandomForestClassifier(random_state=random_state)
 
-            n_estimators = [50, 100, 500, 1000] #[int(x) for x in np.linspace(start = 50, stop = 2000, num = 20)]
-            max_features = ['auto', 'log2']
+            n_estimators = [500] #[50, 100, 500, 1000] #[int(x) for x in np.linspace(start = 50, stop = 2000, num = 20)]
+            max_features = ['auto'] #['auto', 'log2']
             # max_depth = [int(x) for x in np.linspace(10, 110, num = 11)]
             # max_depth.append(None)
             # min_samples_split = [2,3, 5, 7, 10]
@@ -1865,13 +2040,42 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             smoothing_vals = np.logspace(-9, 0, 4)
             random_grid = {"var_smoothing": smoothing_vals}
 
+        elif modeltype == 'mlp_torch':
+            if feature_selection:
+                k = feature_selection_args['K'][0]
+                select_k = SelectKBest(f_classif, k=k)
+                X_new = select_k.fit_transform(X, y)
+                selected_features_mask = select_k.get_support()
+            else:
+                X_new = X.copy().values
+                selected_features_mask = None
+
+            mlp_model = [MLP_large, MLP_small]
+            weight_decay = [1e-1, 1e-2]
+            lr = [1e-3]
+            auc_plateau_max = [10]
+            random_grid = {'mlp_model':mlp_model,
+                            'weight_decay':weight_decay,
+                            'lr':lr,
+                            'auc_plateau_max':auc_plateau_max                          
+                          }
+            param_grid = sklearn.model_selection.ParameterGrid(random_grid)
+            best_val_auc = 0
+            for params in param_grid:
+                model, val_auc = mlp_torch(X_new, y, params, batch_size=64, epochs=30, n_iter=300, logdir=logdir)
+                if val_auc > best_val_auc:
+                    best_val_auc = val_auc
+                    best_model = model
+                    best_params = params
+            return best_model, None, selected_features_mask
+
         else:
             raise Exception('modeltype = "%s" is invalid' % modeltype)
 
         
         if modeltype in ['1class_svm', 'iforest', '1class_svm_novel']:
             ## auroc doesn't work for one-class models
-            scoring=sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
+            scoring = sklearn.metrics.make_scorer(sklearn.metrics.f1_score, pos_label=-1)
             y[y==1] = -1
             y[y==0] = 1
             refit_score=True
@@ -2555,7 +2759,8 @@ def main_no_years(random_seed=None, max_time=24, test_size=0.2, level='itemid', 
     return
 
 def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representation='raw', test_size=0.2,
-         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="", test_hospitals=[], save_data=False):
+         target='mort_icu', prefix="", model_types=['rf'],  data_dir="", train_hospitals=[], output_dir="",
+         test_hospitals=[], save_data=False, feature_selection=False, **feature_selection_args):
     """
     This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
 
@@ -2565,25 +2770,23 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     global sites_df
     global scaler
     global train_means
+    global years_df
 
     np.random.seed(random_seed)
 
-
-
-
     # (Amin) not using torch yet
     # torch.manual_seed(random_seed)
-
-
-
-
 
     # print("Loading the data.")
     # load_data(max_time=max_time, data_dir=data_dir)
 
     if save_data:
-        data_out=os.path.join(output_dir, prefix + "hospital-style_trainHospitals_{}_{}_Simple_seed_{}_target={}.h5".format(
+        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "hospital-style_trainHospitals_{}_{}_Simple_seed_{}_target={}.h5".format(
                 "-".join(train_hospitals), representation, str(random_seed), str(target)))
+        p = pathlib.Path(data_out)
+        if p.is_file():
+            raise "File already exists: " + data_out
+            return
 
      # hours for windowing
     idx = pd.IndexSlice
@@ -2593,12 +2796,14 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     #drop hours in row
     # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
 
-    source_index=sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
-
-    train_index, source_test_index = train_test_split(source_index,  test_size=test_size, random_state=int(random_seed), 
-                                                stratify=label_df.loc[idx[:, source_index], target].values.tolist())
+    source_index = sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
+    ## sort index by year and split the last len(index)*test_size for test set
+    source_index = years_df.loc[source_index, ['year', 'month']].sort_values(['year', 'month']).index
+    ind = int(len(source_index)*(1-test_size))
+    train_index, source_test_index = source_index[0:ind], source_index[ind:]
+    # train_index, source_test_index = train_test_split(source_index,  test_size=test_size, random_state=int(random_seed), 
+    #                                             stratify=label_df.loc[idx[:, source_index], target].values.tolist())
     
-
     for modeltype in model_types:
 
         is_time_series = modeltype in ['lstm', 'gru', 'grud']
@@ -2610,15 +2815,19 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
             filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
             target, representation, is_time_series, impute=not(modeltype=='grud'))
 
-        if save_data:
-            X_df.to_hdf(data_out, key="X_train_" + "-".join(train_hospitals))
-            pd.Series(y).to_hdf(data_out, key='y_train' + "-".join(train_hospitals), mode='a')
-            
         print(X_df.shape)
 
         print("Finding the best %s model using a random search" % modeltype.upper())
 
-        model = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype)
+        model, y_pred_prob, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                                                                    feature_selection=feature_selection, **feature_selection_args)
+
+        if feature_selection:
+            X_df=X_df.loc[:, selected_features_mask]
+        if save_data:
+            key_suffix="-".join(train_hospitals)+"_"+modeltype.upper()
+            X_df.to_hdf(data_out, key="X_train_" + key_suffix, mode='a')
+            pd.Series(y).to_hdf(data_out, key='y_train_' + key_suffix, mode='a')
 
         # Record what the best performing model was
         model_filename=os.path.join(output_dir, 
@@ -2630,10 +2839,7 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
             pickle.dump(model, f)
 
         if (test_hospitals is None or len(test_hospitals) == 0):
-            hosp_set=set(sites_df['hospital'].values.tolist())
-            ## exclude any train hospitals
-            # test_hospitals=set([h for h in hosp_set if h not in train_hospitals])
-            test_hospitals=hosp_set
+            test_hospitals=set(sites_df['hospital'].values.tolist())
 
         dump_filename=os.path.join(output_dir, 
                                     prefix + "result_hospital-style_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
@@ -2651,10 +2857,14 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
                     filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
                     representation, is_time_series, impute=not(modeltype=='grud'),
                     timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                
+                if feature_selection:
+                    X_df=X_df.loc[:, selected_features_mask]
                         
                 if save_data:
-                    X_df.to_hdf(data_out, key="X_test_" + hospital, mode='a')
-                    pd.Series(y).to_hdf(data_out, key='y_test' + hospital, mode='a')
+                    key_suffix = hospital + "_" + modeltype.upper()
+                    X_df.to_hdf(data_out, key="X_test_" + key_suffix, mode='a')
+                    pd.Series(y).to_hdf(data_out, key='y_test_' + key_suffix, mode='a')
 
                 y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
 
@@ -3150,6 +3360,188 @@ def main_single_site(site_name="UPMCPUH", random_seed=None, max_time=24, level='
 
     return
 
+def main_hospital_pairwise(train_hospitals, test_hospitals=[], target='mort_icu', model_types=['rf'], representation='raw', 
+        test_size=0.2, max_time=24, level='itemid', prefix="", data_dir="", output_dir="", save_data=False, random_seed=None, 
+        feature_selection=False, **feature_selection_args):
+
+    ## call the main_hospital_wise() function for each train hospital to run a pairwise analysis
+    for hospital in train_hospitals:
+        print("train hospital =", hospital)
+        hospitals = [hospital]
+        main_hospital_wise(random_seed, max_time, level, representation, test_size,
+            target, prefix, model_types, data_dir, hospitals, output_dir, test_hospitals, save_data,
+            feature_selection, **feature_selection_args)
+        print("#"*100)
+
+def main_hospital_wise_bootstrap(n_bootstrap=10, random_seed=None, max_time=24, level='itemid', representation='raw', test_size=0,
+         target='mort_icu', prefix="", modeltype='rf',  data_dir="", train_hospitals=[], output_dir="",
+         test_hospitals=[], save_data=False, feature_selection=False, **feature_selection_args):
+    """
+    This function trains data from training_years hidenic and tests on data after training_years, once every test_month_interval month.
+
+    """
+    global filtered_df
+    global label_df
+    global sites_df
+    global scaler
+    global train_means
+    global years_df
+    global logdir
+
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
+
+    # print("Loading the data.")
+    # load_data(max_time=max_time, data_dir=data_dir)
+
+    is_load_from_disk=False
+    if save_data:
+        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "hospital-bootstrap-style_trainHospitals_{}_{}_{}_Simple_seed_{}_target={}.h5".format(
+                "-".join(train_hospitals), modeltype.upper(), representation, str(random_seed), str(target)))
+        p = pathlib.Path(data_out)
+        if p.is_file():
+            is_load_from_disk=True
+
+     # hours for windowing
+    idx = pd.IndexSlice
+    filtered_df_time_window = filtered_df.loc[(filtered_df.index.get_level_values('hours_in') >= 0) &
+                                              (filtered_df.index.get_level_values('hours_in') <= max_time)]
+
+    #drop hours in row
+    # filtered_df_time_window=filtered_df_time_window.drop('hours_in', axis=1, level=0)
+
+    source_index = sites_df[sites_df['hospital'].isin(train_hospitals)].index.tolist()
+    ## sort index by year and split the last len(index)*test_size for test set
+
+    for n_bs in range(n_bootstrap):
+        print('source_index size=', len(source_index))
+        indices = resample(source_index, replace=True, n_samples=len(source_index), random_state=n_bs)
+        indices = years_df.loc[indices, ['year', 'month']].sort_values(['year', 'month']).index
+        ind = int(len(indices)*(1-test_size))
+        train_index, source_test_index = indices[0:ind], indices[ind:]
+        print('train_index size=', len(train_index))
+
+        # train_index, source_test_index = train_test_split(source_index,  test_size=test_size, random_state=int(random_seed), 
+        #                                             stratify=label_df.loc[idx[:, source_index], target].values.tolist())
+        
+        is_time_series = modeltype in ['lstm', 'gru', 'grud']
+        # is_time_series=True
+
+        print("data preprocessing")
+
+        if is_load_from_disk:
+            key_suffix="-".join(train_hospitals)+"_"+modeltype.upper()+"_nbs_"+str(n_bs)
+            X_df = pd.read_hdf(data_out, key="X_train_" + key_suffix)
+            y = pd.read_hdf(data_out, key='y_train_' + key_suffix).values
+            subject_id = None
+        else:
+            X_df, y, timeseries_vect, representation_vect, gender, ethnicity, subject_id= data_preprocessing(
+                filtered_df_time_window.loc[idx[:,train_index,:],:], level, 'Simple', 
+                target, representation, is_time_series, impute=not(modeltype=='grud'))
+
+        print('processed df shape=', X_df.shape)
+
+        # print("Finding the best %s model using a random search" % modeltype.upper())
+
+        logdir = pathlib.Path(output_dir)/ ('runs/' + target + "_" + "_".join(train_hospitals) + "_nbs_" + str(n_bs))
+        model, y_pred_prob, selected_features_mask = classifier_select(X_df, np.asarray(y).ravel(), is_time_series, subject_id, modeltype=modeltype,
+                                                                    feature_selection=feature_selection, **feature_selection_args)
+
+        if not is_load_from_disk:
+            if feature_selection:
+                X_df=X_df.loc[:, selected_features_mask]
+            if save_data:
+                key_suffix="-".join(train_hospitals)+"_"+modeltype.upper()+"_nbs_"+str(n_bs)
+                X_df.to_hdf(data_out, key="X_train_" + key_suffix, mode='a')
+                pd.Series(y).to_hdf(data_out, key='y_train_' + key_suffix, mode='a')
+
+        # Record what the best performing model was
+        model_filename=os.path.join(output_dir, 
+                                    prefix + "bestmodel-hospital-bootstrap{}-style_trainHospitals_{}_{}_{}_Simple_{}_seed-{}_target={}.pkl".format(
+                                        str(n_bs), modeltype.upper(), "-".join(train_hospitals), representation, level, str(random_seed), str(target))
+                                    )
+        print(model_filename)
+        if modeltype == 'mlp_torch':
+            torch.save(model, model_filename)
+        else:
+            with open(model_filename, 'wb') as f:
+                pickle.dump(model, f)
+
+        if (test_hospitals is None or len(test_hospitals) == 0):
+            test_hospitals=set(sites_df['hospital'].values.tolist())
+            test_hospitals=[h for h in test_hospitals if h not in train_hospitals]
+
+        dump_filename=os.path.join(output_dir, 
+                                    prefix + "result_hospital-bootstrap{}-style_{}_{}_{}_Simple_{}_seed-{}_target={}.txt".format(
+                                        str(n_bs), "-".join(train_hospitals), modeltype.upper(), representation, level, str(random_seed), str(target))
+                                    )
+        with open(dump_filename, 'w') as f:
+            for hospital in tqdm(sorted(test_hospitals)):
+
+                if hospital in train_hospitals:
+                    # test_index = source_test_index
+                    continue
+                else:           
+                    test_index=sites_df[sites_df['hospital'] == hospital].index.tolist()
+                # get the X and y data for testing
+
+                if is_load_from_disk:
+                    key_suffix = hospital + "_" + modeltype.upper()+"_nbs_"+str(n_bs)
+                    X_df = pd.read_hdf(data_out, key="X_test_" + key_suffix)
+                    y = pd.read_hdf(data_out, key='y_test_' + key_suffix).values
+                    subject_id = None
+                else:
+                    X_df, y, _, _, gender, ethnicity, subject_id= data_preprocessing(
+                        filtered_df_time_window.loc[idx[:,test_index,:],:], level, 'Simple', target,
+                        representation, is_time_series, impute=not(modeltype=='grud'),
+                        timeseries_vect=timeseries_vect, representation_vect=representation_vect)
+                    if feature_selection:
+                        X_df=X_df.loc[:, selected_features_mask]
+                    if save_data:
+                        key_suffix = hospital + "_" + modeltype.upper()+"_nbs_"+str(n_bs)
+                        X_df.to_hdf(data_out, key="X_test_" + key_suffix, mode='a')
+                        pd.Series(y).to_hdf(data_out, key='y_test_' + key_suffix, mode='a')
+
+                y, y_pred_prob, pred = get_prediction(modeltype, model, X_df, y, subject_id)
+                AUC, F1, ACC, APR, ECE, MCE, O_E = get_measures(y, y_pred_prob, pred, modeltype)
+
+                f.write("hospital, {}, AUC, {} \r\n".format(str(hospital), str(AUC)))
+                f.write("hospital, {}, F1, {} \r\n".format(str(hospital), str(F1)))
+                f.write("hospital, {}, Acc, {} \r\n".format(str(hospital), str(ACC)))
+                f.write("hospital, {}, APR, {} \r\n".format(str(hospital), str(APR)))
+                f.write("hospital, {}, ECE, {} \r\n".format(str(hospital), str(ECE)))
+                f.write("hospital, {}, MCE, {} \r\n".format(str(hospital), str(MCE)))
+                f.write("hospital, {}, O_E, {} \r\n".format(str(hospital), str(O_E)))
+
+                f.write("hospital, {}, label, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in y])))
+                f.write("hospital, {}, pred, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in pred])))
+                f.write("hospital, {}, y_pred_prob, <{}>\r\n".format(str(hospital), ",".join([str(i) for i in y_pred_prob])))
+                try:
+                    f.write("hospital, {}, gender, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in gender])))
+                    f.write("hospital, {}, ethnicity, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in ethnicity])))
+                    f.write("hospital, {}, subject, <{}> \r\n".format(str(hospital), ",".join([str(i) for i in subject_id])))
+                except:
+                    pass
+
+                f.write("hospital, {}, best_params, <{}> \r\n".format(str(hospital), best_params))
+
+        print("Finished {}".format(dump_filename))
+
+    return
+
+def main_hospital_pairwise_bootstrap(n_bootstrap, train_hospitals, test_hospitals=[], target='mort_icu', modeltype='rf', representation='raw', 
+        test_size=0, max_time=24, level='itemid', prefix="", data_dir="", output_dir="", save_data=False, random_seed=None, 
+        feature_selection=False, **feature_selection_args):
+
+    ## call the main_hospital_wise() function for each train hospital to run a pairwise analysis
+    for hospital in train_hospitals:
+        print("train hospital =", hospital)
+        hospitals = [hospital]
+        main_hospital_wise_bootstrap(n_bootstrap, random_seed, max_time, level, representation, test_size,
+            target, prefix, modeltype, data_dir, hospitals, output_dir, test_hospitals, save_data,
+            feature_selection, **feature_selection_args)
+        print("#"*100)
+
 
 if __name__=="__main__":
     """
@@ -3159,10 +3551,12 @@ if __name__=="__main__":
     t0 = time.time()
     
     global n_threads
+    global output_dir
+
     print("in main")
     import argparse
     parser = argparse.ArgumentParser(description='Train models on HIDENIC EMR data with year-of-care')
-    parser.add_argument('--test_size', type=float, default=0.2)
+    parser.add_argument('--test_size', type=float, default=0)
     parser.add_argument('--max_time', type=int, default=24)
     parser.add_argument('--random_seed', type=int, nargs='+', default=None)
     parser.add_argument('--level', type=str, default='itemid', choices=['itemid', 'Level2', 'nlp'])
@@ -3170,7 +3564,9 @@ if __name__=="__main__":
     parser.add_argument('--target_list', type=str, nargs='+', default=None, help="choices:['mort_icu', 'los_3']")
     parser.add_argument('--prefix', type=str, default="")
     parser.add_argument('--model_types', type=str, nargs='+', default=None, help="choices: ['rf', 'lr', 'svm', 'rbf-svm', 'knn', 'mlp', '1class_svm', '1class_svm_novel', 'iforest', 'lstm', 'gru', 'grud']")
-    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['overall_overtime', 'rolling_limited', 'rolling', 'no_years', 'hospital_wise', 'icu_type', 'single_site', hospital_overtime]")
+    parser.add_argument('--train_types', type=str,  nargs='+', default=None, help="choices:['overall_overtime', 'rolling_limited', 'rolling', 'no_years',\
+                                                                                    'hospital_wise', 'icu_type', 'single_site', hospital_overtime, hospital_pairwise\
+                                                                                     hospital_pairwise_bootstrap]")
     parser.add_argument('--data_dir', type=str, default="", help="full path to the folder containing the data")
     parser.add_argument('--output_dir', type=str, default="", help="full path to the folder of results")
     parser.add_argument('--gpu', type=str, default=0, nargs='+', help="which GPUS to train on")
@@ -3186,6 +3582,8 @@ if __name__=="__main__":
     parser.add_argument('--feature_selection', type=int, default=0, help="run univariate feature selection. 0: False, 1: True")
     parser.add_argument('--K', type=int, nargs='+', default=None, help="number of features to select (list of int)")
     parser.add_argument('--train_years', type=int, nargs='+', default=[2008,2009,2010], help="2008-2014")
+    parser.add_argument('--n_bootstrap', type=int, default=10, help="n_bootstrap runs")
+
 
     args = parser.parse_args()
     
@@ -3225,16 +3623,19 @@ if __name__=="__main__":
     if 'single_site' in args.train_types:
         assert args.site_name is not None, "site_name is required for train_type='single_site'"
 
-    feature_selection_args=None
+    feature_selection_args={}
     if args.feature_selection:
         if isinstance(args.K, int):
             args.K=[args.K]
         feature_selection_args={'K': args.K}
 
     n_threads=args.n_threads
+    output_dir=args.output_dir
 
     # os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
     # os.environ["CUDA_VISIBLE_DEVICES"]=",".join([str(gpu) for gpu in args.gpu])  # specify which GPU(s) to be used
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     
     filtered_df=None
@@ -3328,10 +3729,21 @@ if __name__=="__main__":
                             save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
                     elif train_type=='hospital_overtime':
                         main_hospital_overtime(random_seed=seed, max_time=args.max_time, level=args.level, representation=representation,
-                        test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
-                        model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
-                        test_hospitals=args.test_hospitals, save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
+                            test_month_interval=args.test_month_interval, training_years=[2008, 2009, 2010], target=target, prefix=args.prefix, 
+                            model_types=args.model_types,  data_dir=args.data_dir, train_hospitals=args.train_hospitals, output_dir=args.output_dir, 
+                            test_hospitals=args.test_hospitals, save_data=args.save_data, feature_selection=args.feature_selection, **feature_selection_args)
 
+                    elif train_type=='hospital_pairwise':
+                        main_hospital_pairwise(train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, target=target, 
+                            model_types=args.model_types, representation=representation, test_size=0.2, max_time=args.max_time, level=args.level, 
+                            prefix=args.prefix, data_dir=args.data_dir, output_dir=args.output_dir, save_data=args.save_data, random_seed=seed, 
+                            feature_selection=args.feature_selection, **feature_selection_args)
+
+                    elif train_type=='hospital_pairwise_bootstrap':
+                        main_hospital_pairwise_bootstrap(n_bootstrap=args.n_bootstrap, train_hospitals=args.train_hospitals, test_hospitals=args.test_hospitals, target=target, 
+                            modeltype=args.model_types[0], representation=representation, test_size=0, max_time=args.max_time, level=args.level, 
+                            prefix=args.prefix, data_dir=args.data_dir, output_dir=args.output_dir, save_data=args.save_data, random_seed=seed, 
+                            feature_selection=args.feature_selection, **feature_selection_args)
 
     t1=time.time()
     print("Total run-time =  {:10.1f} seconds.".format(t1-t0))
