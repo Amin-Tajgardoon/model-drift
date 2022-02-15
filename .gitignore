@@ -128,6 +128,10 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# python objects
+*.npy
+*.pkl
+
 # other
 .vscode/*
 util/scripts/test.bat
@@ -137,3 +141,4 @@ notebooks/drift_detection.ipynb
 util/scripts/*.bat
 notebooks/drift_true_labels.ipynb
 notebooks/display_results.ipynb
+*.csv

@@ -858,7 +858,7 @@ def data_preprocessing(df_in, level, imputation_method, target, embedding, is_ti
             index=X_df.index.tolist()
             columns=X_df.columns.tolist()
 
-#             print(df_stds.loc[df_stds.values==0, :])
+            # print(df_stds.loc[df_stds.values==0, :])
             # print(np.sum(df_stds.values==0))
 
 
@@ -2011,17 +2011,17 @@ def classifier_select(X, y, is_time_series, subject_index, modeltype='rf', rando
             model = MLPClassifier()
 
             #C_values = np.linspace(.001, 100, num = 3)
-            activation = ['identity', 'logistic', 'tanh', 'relu']
-            solver = ['lbfgs', 'sgd', 'adam']
+            activation = ['relu'] #['identity', 'logistic', 'tanh', 'relu']
+            solver = ['adam'] #['lbfgs', 'sgd', 'adam']
             learning_rate = ['constant', 'invscaling', 'adaptive'] #only when solver=sgd
             tol = np.linspace(.0001, 1, num = 11)
             warm_start = ['True', 'False']
 
             random_grid = {'activation':activation,
                            'solver':solver,
-                           'learning_rate':learning_rate,
-                           'tol':tol,
-                           'warm_start':warm_start
+                        #    'learning_rate':learning_rate,
+                        #    'tol':tol,
+                        #    'warm_start':warm_start
                           }
 
         elif modeltype == 'knn':
@@ -2781,8 +2781,8 @@ def main_hospital_wise(random_seed=None, max_time=24, level='itemid', representa
     # load_data(max_time=max_time, data_dir=data_dir)
 
     if save_data:
-        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "hospital-style_trainHospitals_{}_{}_Simple_seed_{}_target={}.h5".format(
-                "-".join(train_hospitals), representation, str(random_seed), str(target)))
+        data_out=os.path.join(data_dir, "preprocessed_data/", prefix + "hospital-style_trainHospitals_{}_{}_{}_Simple_seed_{}_target={}.h5".format(
+                "-".join(train_hospitals), "-".join([m.upper() for m in model_types]), representation, str(random_seed), str(target)))
         p = pathlib.Path(data_out)
         if p.is_file():
             raise "File already exists: " + data_out
